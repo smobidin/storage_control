@@ -117,11 +117,11 @@ def _copy_safe(source, destination):
 
 
 def _run_git_before(repo, log_path):
-    rc, out = run_cmd(["git", "describe", "--tags", "--exact-match"], cwd=repo, log_path=log_path)
-    if rc == 0 and out.strip():
-        return out.strip()
-    rc, out = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo, log_path=log_path)
-    return out.strip() if rc == 0 else "unknown"
+    from ..updates.versions import _git_version
+
+    version = _git_version(repo)
+    log_write(log_path, "$ git version: %s\n" % version)
+    return version
 
 
 def _stash(repo, preserve_id, log_path):

@@ -14,12 +14,32 @@ def _run(args, cwd):
         return 1, str(e)
 
 
-def immich_current():
-    rc, out = _run(["git", "describe", "--tags", "--exact-match"], IMMICH_SRC)
+def _git_version(cwd):
+    """Version of a git checkout, as shown on the dashboard.
+
+    `git describe --tags --exact-match` only answers when HEAD sits exactly on
+    a tag; a checkout carrying local commits (branch `local/patches`) falls
+    through to a commit hash, which reads as version 0 in comparisons and
+    makes the UI claim an update is available. So: exact tag, else the nearest
+    reachable tag plus how many commits are stacked on it (v3.3.3+1), and the
+    hash only when the checkout is not reachable from any tag.
+    """
+    rc, out = _run(["git", "describe", "--tags", "--exact-match"], cwd)
     if rc == 0 and out:
         return out
-    rc, out = _run(["git", "rev-parse", "--short", "HEAD"], IMMICH_SRC)
+    rc, tag = _run(["git", "describe", "--tags", "--abbrev=0"], cwd)
+    if rc == 0 and tag:
+        rc2, ahead = _run(["git", "rev-list", "--count", "%s..HEAD" % tag], cwd)
+        ahead = (ahead or "").strip()
+        if rc2 == 0 and ahead.isdigit() and ahead != "0":
+            return "%s+%s" % (tag, ahead)
+        return tag
+    rc, out = _run(["git", "rev-parse", "--short", "HEAD"], cwd)
     return out if rc == 0 else "unknown"
+
+
+def immich_current():
+    return _git_version(IMMICH_SRC)
 
 
 def immich_tags(limit=30):
@@ -36,11 +56,7 @@ def immich_tags(limit=30):
 
 
 def nextcloud_current():
-    rc, out = _run(["git", "describe", "--tags", "--exact-match"], NEXTCLOUD_ROOT)
-    if rc == 0 and out:
-        return out
-    rc, out = _run(["git", "rev-parse", "--short", "HEAD"], NEXTCLOUD_ROOT)
-    return (out or "unknown") if rc == 0 else "unknown"
+    return _git_version(NEXTCLOUD_ROOT)
 
 
 def nextcloud_current_major():
@@ -94,7 +110,12 @@ _MIGRATION_KEYWORDS = (
 def _version_key(value):
     if not value:
         return ()
-    return tuple(int(x) for x in __import__("re").findall(r"\d+", value))
+    # Only the leading numeric part: a local-commit marker ("v3.3.3+1") or a
+    # pre-release suffix ("v3.3.3-rc1") must not outrank "v3.3.3" itself.
+    match = re.match(r"\d+(?:\.\d+)*", (value or "").lstrip("vV"))
+    if not match:
+        return ()
+    return tuple(int(x) for x in match.group(0).split("."))
 
 
 def _fetch_release(repo, timeout=10):
