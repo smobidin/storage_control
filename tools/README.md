@@ -74,6 +74,31 @@ systemctl --user start storage-control
 journalctl --user -u storage-control -f
 ```
 
+## tools/immich — ночной фикс превьюшек
+
+`immich/night_fix_thumbnails.cjs` — самодельный скрипт, который чинит ассеты
+без `thumbhash` (Samsung HEIC через libheif 1.23.4, RAW через exiftool/dcraw,
+BMP/PSD через ImageMagick, видео через ffmpeg). Запускается юнитом
+`immich-nightfix.service` по таймеру `immich-nightfix.timer` каждый день в 03:30.
+
+Скрипт лежит **в этом репозитории**, а не в `~/immich/src`: Preserve в
+storage-control делает `git stash push -u`, который уносит untracked-файлы
+immich, — 2026-10-14 скрипт так и пропал. Юнит запускает его по пути
+`%h/dev/stoage_system_tools/tools/immich/night_fix_thumbnails.cjs`.
+
+Зависимости (`sharp`, `pg`, `thumbhash`, `exiftool-vendored.pl`) берутся из
+`node_modules` immich-server через `createRequire`: `NODE_PATH` не действует на
+динамический `import()`, а каталоги `.pnpm` меняют имена при каждом
+`pnpm install`. `DB_URL` юнит подставляет из `~/immich/.env`.
+
+```bash
+systemctl --user start immich-nightfix.service     # разовый прогон
+journalctl --user -u immich-nightfix.service -n 20
+```
+
+Код возврата: 0 — чинить было нечего или всё починено; 1 — что-то осталось
+без thumbhash (в journal попадает список `FAIL <asset id>`).
+
 ## Удаление сервиса
 
 ```bash

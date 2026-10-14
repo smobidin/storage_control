@@ -61,6 +61,7 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 - `Runner app/runners/smart_monitor.py` performs the nightly SMART check; it stores `SmartDiskState` and active `SmartAlert` records. Startup also runs one baseline check asynchronously.
 - SMART discovery is dynamic from `/sys/block`; loops, RAID, RAM, empty, and virtual block devices are excluded.
 - Dashboard renders SMART alarm rows red and lists active alarms from `/api/health/smart/status`.
+- `tools/immich/night_fix_thumbnails.cjs` is the user's own nightly thumbnail fixer, run by `immich-nightfix.timer` (03:30). It lives in this repo, not in `~/immich/src`, because Preserve's `git stash push -u` would swallow it as an untracked file. It loads `sharp`/`pg`/`thumbhash`/exiftool from immich's `node_modules` via `createRequire`.
 
 ## System-service access
 
