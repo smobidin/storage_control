@@ -131,6 +131,39 @@ git apply --3way ~/dev/stoage_system_tools/tools/immich/patches/0001-storage-sta
 pnpm --filter @immich/server build         # иначе правка не попадёт в dist
 ```
 
+## tools/backup_home_rsync.sh — зеркало домашней директории
+
+Системный диск (`/dev/sde2`, на нём `/` и `/home/storage`) с проблемами, поэтому
+каждую ночь дом копируется на отдельный диск `/mnt/backup` (`/dev/sdc1`):
+
+```bash
+systemctl --user start backup-home-rsync.service    # разовый прогон
+journalctl --user -u backup-home-rsync.service -n 30
+```
+
+Таймер `backup-home-rsync.timer` — 05:00 (намеренно после `backup-immich-nc.timer`
+в 04:00, который пишет дампы БД и конфиги в `/mnt/backup/backups`).
+
+Раскладка назначения:
+
+| Путь | Что |
+|---|---|
+| `/mnt/backup/backups/home-storage/current/` | зеркало `/home/storage` |
+| `/mnt/backup/backups/home-storage/deleted/` | удалённые и перезаписанные файлы (`--backup-dir`), хранятся `KEEP_DAYS` |
+| `/mnt/backup/backups/home-storage/logs/` | логи rsync, ротация та же |
+
+Особенности:
+
+- копируется всё, кроме `/home/storage/.cache/` (3.1 G регенерируемого кэша:
+  `immich_ml`, `playwright`, `pnpm`, `uv`);
+- медиафайлы сюда **не** попадают — они лежат на `/mnt/data` (RAID) и на
+  проблемный системный диск не претендуют;
+- зеркало с `--delete`, но удаляемое не пропадает: оно уезжает в `deleted/`,
+  и только ротация через 30 дней его убирает;
+- запускает пользователь storage, root не нужен;
+- `rc=24` (файлы исчезли во время копирования) считается нормой при живой
+  системе, остальные ненулевые коды — ошибка с логом в `logs/`.
+
 ## Удаление сервиса
 
 ```bash

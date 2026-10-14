@@ -61,6 +61,11 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 - Prepare stashes local Git changes before backup, so preserve's file copies may predate the stash. For custom tracked files such as `.htaccess`, recover them from `git show refs/preserve/<id>:...` rather than from the copied file.
 - On failure the runner turns maintenance mode off where possible; verify it manually before retrying.
 
+## Host backups
+
+- `backup-immich-nc.timer` (04:00) dumps immich/nextcloud DBs and configs to `/mnt/backup/backups`. Its stale twin at `~/immich/tools/backup_immich_nc.sh` still points at the non-existent `/mnt/recovery`; the live script is `/home/storage/tools/backup_immich_nc.sh`.
+- `backup-home-rsync.timer` (05:00) runs `tools/backup_home_rsync.sh`: an rsync mirror of `/home/storage` to `/mnt/backup/backups/home-storage/{current,deleted,logs}`, excluding `/.cache/`. The system disk `/dev/sde2` holds `/` and `/home/storage` and is failing, so this is the main protection for the home directory. Media lives on `/mnt/data` (RAID) and is not copied.
+
 - `Runner app/runners/smart_monitor.py` performs the nightly SMART check; it stores `SmartDiskState` and active `SmartAlert` records. Startup also runs one baseline check asynchronously.
 - SMART discovery is dynamic from `/sys/block`; loops, RAID, RAM, empty, and virtual block devices are excluded.
 - Dashboard renders SMART alarm rows red and lists active alarms from `/api/health/smart/status`.
