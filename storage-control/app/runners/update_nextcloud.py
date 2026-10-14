@@ -108,7 +108,8 @@ def _sync_viewer(tag, log_path):
         return rc, out + "failed to download release tarball for viewer refresh\n"
 
     # Unpack somewhere Nextcloud does not scan for apps, so a truncated
-    # download can never end up as a half-written installed app.
+    # download can never end up as a half-written installed app. With one
+    # component stripped the member lands at <stage>/apps/viewer/...
     stage = RUNS_DIR / "viewer_stage"
     if stage.exists():
         shutil.rmtree(stage)
@@ -118,14 +119,16 @@ def _sync_viewer(tag, log_path):
                       log_path=log_path, timeout=600)
     if rc != 0:
         return rc, out
-    staged_major = _viewer_max_major(stage / "appinfo" / "info.xml")
+    staged_dir = stage / "apps" / "viewer"
+    staged_major = _viewer_max_major(staged_dir / "appinfo" / "info.xml")
     if staged_major is None or staged_major < major:
         return 1, (f"tarball viewer max-version={staged_major} does not cover "
                    f"server {version}\n")
 
     if viewer_dir.exists():
         shutil.rmtree(viewer_dir)
-    shutil.move(str(stage), str(viewer_dir))
+    shutil.move(str(staged_dir), str(viewer_dir))
+    shutil.rmtree(stage, ignore_errors=True)
 
     rc, out = _occ(["app:enable", "viewer"], log_path, timeout=120)
     if rc != 0:
@@ -232,6 +235,15 @@ def run_nextcloud_update(run_id, tag):
 
             step("restart_services", lambda: run_cmd(
                 ["sudo", "systemctl", "restart", "php8.5-fpm", "nginx"], log_path=log_path))
+
+            # apps/ is git-ignored, so the checkout above never refreshes the
+            # separate `viewer` app; a major jump would leave an incompatible
+            # one behind and silently drop the Collabora buttons from Files.
+            rc, _ = step("viewer_sync", lambda: _sync_viewer(tag, log_path))
+            if rc != 0:
+                raise RuntimeError("nextcloud upgraded, but refreshing apps/viewer "
+                                   "failed -- office documents will download instead "
+                                   "of opening in Collabora")
 
             rc, out = step("smoke_test", lambda: run_cmd(
                 ["php", "occ", "status"], cwd=NEXTCLOUD_ROOT, log_path=log_path, timeout=120))
