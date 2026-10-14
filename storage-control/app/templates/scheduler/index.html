@@ -1,5 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Scheduler{% endblock %}
+{% block head %}
+<style>
+  .unitlink { background:none; border:none; color:var(--accent); cursor:pointer;
+              font:inherit; padding:0; text-align:left; }
+  .unitlink:hover { text-decoration:underline; }
+  /* [hidden] must win over display:flex below */
+  .modal-backdrop[hidden] { display:none; }
+  .modal-backdrop { position:fixed; inset:0; background:rgba(2,6,23,.75);
+                    display:flex; align-items:center; justify-content:center;
+                    padding:20px; z-index:50; }
+  .modal { background:var(--panel); border:1px solid #334155; border-radius:10px;
+           width:min(920px,100%); max-height:85vh; display:flex; flex-direction:column; }
+  .modal-head { display:flex; align-items:center; gap:12px; padding:12px 16px;
+                border-bottom:1px solid #334155; }
+  .modal-head strong { word-break:break-all; }
+  .modal-body { margin:0; padding:16px; overflow:auto;
+                font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                font-size:12.5px; line-height:1.5; white-space:pre-wrap;
+                word-break:break-word; }
+</style>
+{% endblock %}
 {% block content %}
 <h1>Scheduler</h1>
 
@@ -60,7 +81,10 @@
     {% for t in timers %}
       <tr>
         <td>{{ t.scope }}</td>
-        <td>{{ t.unit }}</td>
+        <td>
+          <button type="button" class="unitlink" title="Показать unit-файл"
+                  data-scope="{{ t.scope }}" data-unit="{{ t.unit }}">{{ t.unit }}</button>
+        </td>
         <td style="font-size:11px;">{{ t.raw }}</td>
         <td>
           {% for act in ['enable','disable','start','stop'] %}
@@ -78,4 +102,60 @@
     </tbody>
   </table>
 </div>
+
+<div id="unitModal" class="modal-backdrop" hidden
+     data-url="{{ url_for('scheduler.unit_text', scope='__SCOPE__', unit='__UNIT__') }}">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unitModalTitle">
+    <div class="modal-head">
+      <strong id="unitModalTitle">unit</strong>
+      <button class="btn" type="button" id="unitModalClose" style="margin-left:auto;">Закрыть</button>
+    </div>
+    <pre id="unitModalBody" class="modal-body">Загрузка…</pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var modal = document.getElementById('unitModal');
+  if (!modal) return;
+  var title = document.getElementById('unitModalTitle');
+  var body = document.getElementById('unitModalBody');
+  var urlTemplate = modal.getAttribute('data-url');
+
+  function hide() { modal.hidden = true; }
+
+  document.getElementById('unitModalClose').addEventListener('click', hide);
+  // клик по подложке и Escape тоже закрывают
+  modal.addEventListener('click', function (e) { if (e.target === modal) hide(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !modal.hidden) hide();
+  });
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.unitlink') : null;
+    if (!btn) return;
+
+    title.textContent = btn.getAttribute('data-unit');
+    body.textContent = 'Загрузка…';
+    modal.hidden = false;
+
+    var url = urlTemplate
+      .replace('__SCOPE__', encodeURIComponent(btn.getAttribute('data-scope')))
+      .replace('__UNIT__', encodeURIComponent(btn.getAttribute('data-unit')));
+
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      })
+      .then(function (res) {
+        body.textContent = (res.ok && res.data && res.data.ok)
+          ? res.data.text
+          : 'Ошибка: ' + ((res.data && res.data.error) || ('HTTP ' + res.ok));
+      })
+      .catch(function (err) { body.textContent = 'Ошибка запроса: ' + err; });
+  });
+})();
+</script>
 {% endblock %}

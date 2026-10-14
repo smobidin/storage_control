@@ -1,6 +1,6 @@
 import subprocess, re
 from pathlib import Path
-from flask import Blueprint, render_template, request, flash, redirect, url_for
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
 from flask_login import login_required
 from flask_wtf.csrf import validate_csrf
 from wtforms.validators import ValidationError
@@ -138,3 +138,37 @@ def toggle_timer():
     ok, msg = svcs.manage_one(unit, scope, action)
     flash(f"{unit}: {msg}", "success" if ok else "danger")
     return redirect(url_for("scheduler.index"))
+
+
+@bp.route("/unit/<scope>/<unit>")
+@login_required
+def unit_text(scope, unit):
+    """Unit file text behind a Scheduler row, shown in a modal on click."""
+    try:
+        svcs.validate_unit(unit)
+    except ValueError:
+        return jsonify({"ok": False, "error": "недопустимое имя юнита"}), 400
+    if scope not in ("user", "system"):
+        return jsonify({"ok": False, "error": "недопустимый scope"}), 400
+
+    base = (["systemctl", "--user", "cat"] if scope == "user"
+            else ["sudo", "systemctl", "cat"])
+    # a .timer only schedules the job; the job itself is the .service
+    wanted = [unit]
+    if unit.endswith(".timer"):
+        wanted.append(unit[:-len(".timer")] + ".service")
+
+    blocks = []
+    for name in wanted:
+        try:
+            r = subprocess.run(base + [name], capture_output=True,
+                               text=True, timeout=20)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        text = (r.stdout or "").strip()
+        if r.returncode == 0 and text:
+            blocks.append(text)
+
+    if not blocks:
+        return jsonify({"ok": False, "error": "файл юнита не найден: %s" % unit}), 404
+    return jsonify({"ok": True, "unit": unit, "text": "\n\n".join(blocks)})
