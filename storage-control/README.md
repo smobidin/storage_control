@@ -116,6 +116,7 @@ Immich:
 - `git fetch --tags`, `git checkout <tag>`;
 - `pnpm install --frozen-lockfile`;
 - `pnpm run build` в `server` и `web`;
+- сборка core-плагина (`@immich/plugin-core` → wasm через extism-js + wasm-merge из `~/immich/tools`) и установка в `~/immich/build/plugins/immich-plugin-core` — нефатально, при отсутствии инструментов только WARN;
 - `pnpm run migrations:run` с `DB_URL` из `~/immich/.env`;
 - restart `immich-ml`, `immich-server`;
 - smoke `curl http://127.0.0.1:2283/api/server/ping` (с ретраями: серверу нужно несколько секунд после restart; `/api/health` в новых версиях immich убран).

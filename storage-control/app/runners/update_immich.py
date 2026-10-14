@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-import os, json, time
+import os, json, time, shutil
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
@@ -74,6 +74,47 @@ def _wait_healthy(log_path, urls=_SMOKE_URLS, deadline=180):
     return rc, out
 
 
+def _plugin_env():
+    """`_tool_env()` plus the extism-js / wasm-merge tool dirs.
+
+    Both are hand-installed under ~/immich/tools and are not on any service
+    PATH. binaryen's dir carries its version in the name, so it is discovered
+    instead of hardcoded.
+    """
+    env = _tool_env()
+    tools = STORAGE_HOME / "immich" / "tools"
+    dirs = [tools / "extism-js"]
+    dirs += sorted(p / "bin" for p in (tools / "binaryen").glob("binaryen-*"))
+    found = [d for d in dirs if d.is_dir()]
+    if found:
+        env["PATH"] = os.pathsep.join([str(d) for d in found] + [env["PATH"]])
+    return env
+
+
+def _build_core_plugin(node_env, log_path):
+    """Build the core workflow plugin and install it where immich loads it.
+
+    immich reads it from <build>/plugins/immich-plugin-core/{manifest.json,dist}
+    (the server/Dockerfile layout); without it the server logs
+    "Failed to import plugin ..." on every boot and core templates are missing.
+    """
+    rc, _ = run_cmd(
+        ["pnpm", "--filter", "@immich/sdk", "--filter", "@immich/plugin-sdk",
+         "--filter", "@immich/plugin-core", "build"],
+        cwd=IMMICH_SRC, env=node_env, log_path=log_path, timeout=1800)
+    if rc != 0:
+        return rc
+
+    src = IMMICH_SRC / "packages" / "plugin-core"
+    dst = IMMICH_SRC.parent / "build" / "plugins" / "immich-plugin-core"
+    (dst / "dist").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src / "manifest.json", dst / "manifest.json")
+    shutil.rmtree(dst / "dist", ignore_errors=True)
+    shutil.copytree(src / "dist", dst / "dist")
+    log_write(log_path, "installed core plugin to %s\n" % dst)
+    return 0
+
+
 def _push(run, steps):
     run.steps = json.dumps(steps)
     db.session.commit()
@@ -92,6 +133,7 @@ def run_immich_update(run_id, tag):
         node_env = _tool_env()
         mig_env = dict(node_env)
         mig_env.update(_env_file(IMMICH_ENV))
+        plugin_env = _plugin_env()
 
         def step(name, fn):
             steps.append({"name": name, "status": "running"})
@@ -145,6 +187,12 @@ def run_immich_update(run_id, tag):
                 env=node_env, log_path=log_path, timeout=1800))
             if rc != 0:
                 raise RuntimeError("web build failed")
+
+            # Not fatal: without it immich just logs "Failed to import plugin"
+            # and core workflow templates are unavailable.
+            rc, _ = step("build_plugin_core", lambda: _build_core_plugin(plugin_env, log_path))
+            if rc != 0:
+                log_write(log_path, "WARN: core plugin build failed; continuing\n")
 
             rc, _ = step("migrations", lambda: run_cmd(
                 ["pnpm", "run", "migrations:run"], cwd=IMMICH_SRC / "server",
