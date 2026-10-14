@@ -4,7 +4,8 @@ import os, json, time, shutil
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
-from ..config import IMMICH_SRC, IMMICH_ENV, STORAGE_HOME, BACKUP_ROOT, RUNS_DIR
+from ..config import (IMMICH_SRC, IMMICH_ENV, IMMICH_PATCHES_DIR, STORAGE_HOME,
+                      BACKUP_ROOT, RUNS_DIR)
 from .common import run_cmd, log_write
 
 
@@ -115,6 +116,63 @@ def _build_core_plugin(node_env, log_path):
     return 0
 
 
+def _apply_local_patches(patches_dir, log_path):
+    """Re-apply the local immich patches kept in this repo.
+
+    They live outside the immich tree (branch `local/patches` in ~/immich/src
+    and tools/immich/patches here), so every `git checkout <tag>` wipes them
+    and the update has to put them back before the server is built.
+
+    Best effort: a release may have fixed what the patch works around, so a
+    patch that no longer applies is reported instead of failing the upgrade.
+    """
+    patches = sorted(Path(patches_dir).glob("*.patch"))
+    if not patches:
+        log_write(log_path, "no local patches in %s\n" % patches_dir)
+        return 0
+
+    # Never touch a tree that already carries tracked edits: undoing a failed
+    # 3-way merge would throw them away.
+    rc, out = run_cmd(["git", "status", "--porcelain"], cwd=IMMICH_SRC, log_path=log_path)
+    dirty = [line for line in (out or "").splitlines()
+             if line.strip() and not line.startswith("??")]
+    if rc != 0 or dirty:
+        log_write(log_path, "skipping local patches: tracked files are modified\n")
+        return 1
+
+    failed = []
+    for patch in patches:
+        name = patch.name
+        # already in the tree (e.g. someone sits on branch local/patches)
+        rc, _ = run_cmd(["git", "apply", "--reverse", "--check", str(patch)],
+                        cwd=IMMICH_SRC, log_path=log_path)
+        if rc == 0:
+            log_write(log_path, "%s already applied\n" % name)
+            continue
+        rc, _ = run_cmd(["git", "apply", "--check", str(patch)],
+                        cwd=IMMICH_SRC, log_path=log_path)
+        if rc == 0:
+            rc, _ = run_cmd(["git", "apply", str(patch)], cwd=IMMICH_SRC, log_path=log_path)
+            if rc != 0:
+                failed.append(name)
+            continue
+        # context moved: try a 3-way merge, it is allowed to conflict
+        rc, _ = run_cmd(["git", "apply", "--3way", str(patch)],
+                        cwd=IMMICH_SRC, log_path=log_path)
+        if rc == 0:
+            log_write(log_path, "%s applied with --3way\n" % name)
+            continue
+        # a conflicted --3way leaves markers in the files; restore the tag
+        run_cmd(["git", "reset", "--hard", "HEAD"], cwd=IMMICH_SRC, log_path=log_path)
+        log_write(log_path, "WARN: %s no longer applies; the tree was restored\n" % name)
+        failed.append(name)
+
+    if failed:
+        return 1
+    log_write(log_path, "local patches: %d applied\n" % len(patches))
+    return 0
+
+
 def _push(run, steps):
     run.steps = json.dumps(steps)
     db.session.commit()
@@ -170,6 +228,13 @@ def run_immich_update(run_id, tag):
                 ["git", "checkout", tag], cwd=IMMICH_SRC, log_path=log_path))
             if rc != 0:
                 raise RuntimeError("git checkout failed")
+
+            # Local patches are wiped by the checkout above. Non-fatal: a
+            # release may have fixed what they work around.
+            rc, _ = step("apply_local_patches", lambda: _apply_local_patches(
+                IMMICH_PATCHES_DIR, log_path))
+            if rc != 0:
+                log_write(log_path, "WARN: local patches skipped; continuing\n")
 
             rc, _ = step("pnpm_install", lambda: run_cmd(
                 ["pnpm", "install", "--frozen-lockfile"], cwd=IMMICH_SRC,
