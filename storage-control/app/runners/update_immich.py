@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-import os, json
+import os, json, time
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
@@ -22,6 +22,58 @@ def _env_file(path):
     return out
 
 
+def _tool_env():
+    """Environment for steps that need node/pnpm.
+
+    `pnpm` exists only in immich's private node install
+    (`~/immich/node/bin`, a corepack shim), which is not on the
+    storage-control service PATH, so it must be prepended explicitly.
+    """
+    env = dict(os.environ)
+    node_bin = IMMICH_SRC.parent / "node" / "bin"
+    if node_bin.is_dir():
+        env["PATH"] = f"{node_bin}{os.pathsep}{env.get('PATH', '')}"
+    # never let a corepack "continue? [Y/n]" prompt hang a background job
+    env.setdefault("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+    return env
+
+
+# `/api/health` was dropped upstream (it now falls through to the SPA and
+# returns 200 HTML); `/api/server/ping` is the long-lived liveness route.
+# Both are tried so a future rename does not silently break the smoke test.
+_SMOKE_URLS = (
+    "http://127.0.0.1:2283/api/server/ping",
+    "http://127.0.0.1:2283/api/health",
+)
+
+
+def _wait_healthy(log_path, urls=_SMOKE_URLS, deadline=180):
+    """Poll the immich API until it answers or the deadline passes.
+
+    `systemctl restart` returns as soon as the units are started, while the
+    server needs a few seconds to bind :2283 -- a single immediate curl
+    reported a false failure right after a successful upgrade.
+    """
+    end = time.time() + deadline
+    attempt = 0
+    rc, out = 1, "not attempted"
+    while True:
+        attempt += 1
+        for url in urls:
+            rc, out = run_cmd(["curl", "-fsS", url],
+                              log_path=log_path if attempt == 1 else None,
+                              timeout=30)
+            if rc == 0:
+                if attempt > 1:
+                    log_write(log_path, "healthy after %d attempts: %s\n" % (attempt, url))
+                return rc, out
+        if time.time() >= end:
+            break
+        time.sleep(5)
+    log_write(log_path, "immich API did not answer within %ss\n" % deadline)
+    return rc, out
+
+
 def _push(run, steps):
     run.steps = json.dumps(steps)
     db.session.commit()
@@ -37,6 +89,9 @@ def run_immich_update(run_id, tag):
         run.status = "running"
         db.session.commit()
         steps = []
+        node_env = _tool_env()
+        mig_env = dict(node_env)
+        mig_env.update(_env_file(IMMICH_ENV))
 
         def step(name, fn):
             steps.append({"name": name, "status": "running"})
@@ -75,23 +130,25 @@ def run_immich_update(run_id, tag):
                 raise RuntimeError("git checkout failed")
 
             rc, _ = step("pnpm_install", lambda: run_cmd(
-                ["pnpm", "install", "--frozen-lockfile"], cwd=IMMICH_SRC, log_path=log_path, timeout=1800))
+                ["pnpm", "install", "--frozen-lockfile"], cwd=IMMICH_SRC,
+                env=node_env, log_path=log_path, timeout=1800))
             if rc != 0:
                 raise RuntimeError("pnpm install failed")
 
             rc, _ = step("build_server", lambda: run_cmd(
-                ["pnpm", "run", "build"], cwd=IMMICH_SRC / "server", log_path=log_path, timeout=1800))
+                ["pnpm", "run", "build"], cwd=IMMICH_SRC / "server",
+                env=node_env, log_path=log_path, timeout=1800))
             if rc != 0:
                 raise RuntimeError("server build failed")
             rc, _ = step("build_web", lambda: run_cmd(
-                ["pnpm", "run", "build"], cwd=IMMICH_SRC / "web", log_path=log_path, timeout=1800))
+                ["pnpm", "run", "build"], cwd=IMMICH_SRC / "web",
+                env=node_env, log_path=log_path, timeout=1800))
             if rc != 0:
                 raise RuntimeError("web build failed")
 
-            env = dict(os.environ)
-            env.update(_env_file(IMMICH_ENV))
             rc, _ = step("migrations", lambda: run_cmd(
-                ["pnpm", "run", "migrations:run"], cwd=IMMICH_SRC / "server", env=env, log_path=log_path, timeout=600))
+                ["pnpm", "run", "migrations:run"], cwd=IMMICH_SRC / "server",
+                env=mig_env, log_path=log_path, timeout=600))
             if rc != 0:
                 raise RuntimeError("immich migrations failed")
 
@@ -99,8 +156,7 @@ def run_immich_update(run_id, tag):
                 ["systemctl", "--user", "restart", "immich-ml.service", "immich-server.service"],
                 log_path=log_path))
 
-            rc, _ = step("smoke_test", lambda: run_cmd(
-                ["curl", "-fsS", "http://127.0.0.1:2283/api/health"], log_path=log_path, timeout=60))
+            rc, _ = step("smoke_test", lambda: _wait_healthy(log_path))
 
             run.status = "success" if rc == 0 else "failed"
             run.to_version = tag

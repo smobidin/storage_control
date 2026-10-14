@@ -112,12 +112,13 @@ curl -s http://127.0.0.1:8765/api/health/summary | head
 
 Immich:
 - pre-update бэкап БД и конфигов;
+- `pnpm`/`node` берутся из `~/immich/node/bin` (corepack): раннер добавляет эту директорию в PATH шагов установки/сборки, т.к. в PATH сервиса её нет;
 - `git fetch --tags`, `git checkout <tag>`;
 - `pnpm install --frozen-lockfile`;
 - `pnpm run build` в `server` и `web`;
 - `pnpm run migrations:run` с `DB_URL` из `~/immich/.env`;
 - restart `immich-ml`, `immich-server`;
-- smoke `curl http://127.0.0.1:2283/api/health`.
+- smoke `curl http://127.0.0.1:2283/api/server/ping` (с ретраями: серверу нужно несколько секунд после restart; `/api/health` в новых версиях immich убран).
 
 Nextcloud:
 - pre-update бэкап БД и `config/config.php`;

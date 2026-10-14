@@ -48,7 +48,9 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 ## Update and preserve operations
 
 - Updates page reports GitHub release availability and changelog for Immich and Nextcloud.
+- `pnpm`/`node` for Immich live only in `~/immich/node/bin` (corepack shims) and are NOT on the storage-control service PATH; `runners/update_immich.py::_tool_env()` prepends that dir plus `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` for the pnpm/build/migrations steps. Do not call `pnpm` bare in a runner.
 - Build JS step commonly fails because `npm` is absent on host; Nextcloud ships prebuilt `dist`, so this is usually non-fatal.
+- Immich smoke test must poll, not fire once: `systemctl restart` returns before the API binds `:2283`. It hits `/api/server/ping` because `/api/health` is gone upstream and any unknown path returns 200 HTML from the SPA catch-all.
 - Nextcloud updates must fetch without recursive submodules: use `git fetch origin --tags --no-recurse-submodules`; the runner already does.
 - After checkout, Nextcloud needs `git submodule update --init --recursive`. If this is skipped, `3rdparty` stays on the old commit and `occ upgrade` can fail with missing paths / Symfony errors.
 - `occ upgrade` may exit 1 due to stale optional app references even when status and DB are fine. Verify `php occ status`, especially `versionstring`, `maintenance`, and `needsDbUpgrade`.
