@@ -50,11 +50,15 @@ fi
 #   --delete: назначение должно отражать источник (иначе удалённые файлы
 #             копились бы вечно), но удаляемое попадает в --backup-dir
 #   --partial: докачка прерванных файлов
-#   исключаем только регенерируемый кэш (3.1G: immich_ml, playwright, pnpm, uv)
+#   исключаем только регенерируемый кэш (3.1G: immich_ml, playwright, pnpm, uv).
+#   Паттерн БЕЗ обратного слэша: '/\.cache/' rsync трактует как литеральный
+#   backslash в пути и не исключает ничего — проверено на прогоне, где вся
+#   .cache (3.6G) уехала в зеркало. Ведущий / якорит на корень переноса,
+#   поэтому вложенные node_modules/.cache остаются.
 log "rsync $SRC -> $CURRENT ..."
 rsync -aHAX --numeric-ids --delete --partial \
     --backup --backup-dir="$DELETED/$STAMP" \
-    --exclude='/\.cache/' \
+    --exclude='/.cache/' \
     --stats --human-readable \
     --log-file="$LOGDIR/rsync-$STAMP.log" \
     "$SRC" "$CURRENT/"
