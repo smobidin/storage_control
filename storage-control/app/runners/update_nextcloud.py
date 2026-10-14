@@ -17,6 +17,51 @@ def _push(run, steps):
     db.session.commit()
 
 
+# Substrings that mean a step really failed even if the process exited 0.
+# PHP prints "An unhandled exception has been thrown" before exit(1); some
+# toolchains still return 0. Without this the recorded status could claim
+# success over a crashed step.
+_FATAL_MARKERS = (
+    "An unhandled exception has been thrown",
+    "Traceback (most recent call last)",
+)
+
+
+def _fatal_in(output):
+    if not output:
+        return False
+    return any(m in output for m in _FATAL_MARKERS)
+
+
+def _occ_status_problems(out, expect_version=None, check_maintenance=True):
+    """Parse `occ status` output and return a list of problems ([] == healthy).
+
+    `occ status` exits 0 even when the instance is broken, so the exit code is
+    useless as a health signal -- we parse the printed fields instead.
+    """
+    info = {}
+    for line in (out or "").splitlines():
+        s = line.strip()
+        if s.startswith("-"):
+            s = s[1:].strip()
+        if ":" not in s:
+            continue
+        k, v = s.split(":", 1)
+        info[k.strip()] = v.strip()
+
+    problems = []
+    if info.get("installed") != "true":
+        problems.append(f"installed={info.get('installed')!r}")
+    if check_maintenance and info.get("maintenance") != "false":
+        problems.append("still in maintenance mode")
+    if info.get("needsDbUpgrade") != "false":
+        problems.append("needsDbUpgrade=true")
+    if expect_version and info.get("versionstring") != expect_version.lstrip("v"):
+        problems.append(f"versionstring={info.get('versionstring')!r}, "
+                        f"expected {expect_version.lstrip('v')}")
+    return problems
+
+
 def run_nextcloud_update(run_id, tag):
     from wsgi import app
     with app.app_context():
@@ -33,6 +78,10 @@ def run_nextcloud_update(run_id, tag):
             _push(run, steps)
             log_write(log_path, f"\n=== {name} ===\n")
             rc, out = fn()
+            if rc == 0 and _fatal_in(out):
+                log_write(log_path, "WARN: command exited 0 but printed a fatal "
+                                     "error; marking step failed\n")
+                rc = 1
             steps[-1]["status"] = "ok" if rc == 0 else "failed"
             steps[-1]["rc"] = rc
             _push(run, steps)
@@ -68,6 +117,15 @@ def run_nextcloud_update(run_id, tag):
             if rc != 0:
                 raise RuntimeError("git checkout failed")
 
+            # Bring submodules (3rdparty, ...) to the checked-out tag. Skipping
+            # this leaves 3rdparty on the old release and `occ upgrade` fails
+            # with missing classes / Symfony errors.
+            rc, _ = step("git_submodules", lambda: run_cmd(
+                ["git", "submodule", "update", "--init", "--recursive"],
+                cwd=NEXTCLOUD_ROOT, log_path=log_path, timeout=1800))
+            if rc != 0:
+                raise RuntimeError("git submodule update failed")
+
             rc, _ = step("build_js", lambda: run_cmd(
                 ["make", "build-js-production"], cwd=NEXTCLOUD_ROOT, log_path=log_path, timeout=1800))
             if rc != 0:
@@ -76,6 +134,13 @@ def run_nextcloud_update(run_id, tag):
             rc, _ = step("occ_upgrade", lambda: _occ(["upgrade"], log_path, timeout=1800))
             if rc != 0:
                 raise RuntimeError("occ upgrade failed")
+
+            # Fail fast if the upgrade did not actually apply. Maintenance is
+            # still on at this point, so only version + db state are checked.
+            rc, out = step("verify_upgrade", lambda: _occ(["status"], log_path, timeout=120))
+            problems = _occ_status_problems(out, expect_version=tag, check_maintenance=False)
+            if problems:
+                raise RuntimeError("upgrade did not apply: " + "; ".join(problems))
 
             step("integrity_check", lambda: _occ(["integrity:check-core"], log_path))
             step("add_missing_indices", lambda: _occ(["db:add-missing-indices"], log_path))
@@ -87,11 +152,20 @@ def run_nextcloud_update(run_id, tag):
             step("restart_services", lambda: run_cmd(
                 ["sudo", "systemctl", "restart", "php8.5-fpm", "nginx"], log_path=log_path))
 
-            rc, _ = step("smoke_test", lambda: run_cmd(
+            rc, out = step("smoke_test", lambda: run_cmd(
                 ["php", "occ", "status"], cwd=NEXTCLOUD_ROOT, log_path=log_path, timeout=120))
 
-            run.status = "success" if rc == 0 else "failed"
-            run.to_version = tag
+            # `occ status` exits 0 even when the instance is broken, so decide
+            # the final status from the parsed fields, not the bare exit code.
+            problems = _occ_status_problems(out, expect_version=tag, check_maintenance=True)
+            if rc == 0 and _fatal_in(out):
+                problems.append("smoke test printed a fatal error")
+            if problems:
+                log_write(log_path, "SMOKE TEST FAILED: " + "; ".join(problems) + "\n")
+                run.status = "failed"
+            else:
+                run.status = "success"
+                run.to_version = tag
         except Exception as e:
             run.status = "failed"
             try:
