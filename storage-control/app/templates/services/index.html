@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Services{% endblock %}
+{% block content %}
+<h1>Services</h1>
+
+<div class="card">
+  <h3>Group actions</h3>
+  {% for g in ['immich','nextcloud','infra','backup'] %}
+  <form method="post" action="{{ url_for('services.group') }}" style="display:inline-block;margin-right:8px;margin-bottom:8px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="group" value="{{ g }}">
+    <input type="hidden" name="action" value="start">
+    <button class="btn ok" type="submit" data-confirm="Запустить группу {{ g }}?">Start {{ g }}</button>
+  </form>
+  <form method="post" action="{{ url_for('services.group') }}" style="display:inline-block;margin-right:8px;margin-bottom:8px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="group" value="{{ g }}">
+    <input type="hidden" name="action" value="stop">
+    <button class="btn danger" type="submit" data-confirm="Остановить группу {{ g }}?">Stop {{ g }}</button>
+  </form>
+  <form method="post" action="{{ url_for('services.group') }}" style="display:inline-block;margin-right:8px;margin-bottom:8px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="group" value="{{ g }}">
+    <input type="hidden" name="action" value="restart">
+    <button class="btn" type="submit" data-confirm="Перезапустить группу {{ g }}?">Restart {{ g }}</button>
+  </form>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Unit</th><th>Scope</th><th>Group</th><th>Status</th><th>Enabled</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for s in services %}
+      <tr>
+        <td>{{ s.name }}<div class="muted">{{ s.desc }}</div></td>
+        <td>{{ s.scope }}</td>
+        <td>{{ s.group }}</td>
+        <td><span class="badge {{ 'active' if s.active=='active' else ('inactive' if s.active=='inactive' else 'unknown') }}">{{ s.active }}</span></td>
+        <td>{{ s.enabled }}</td>
+        <td>
+          <a class="btn" target="_blank" href="{{ url_for('services.logs', unit=s.name, scope=s.scope) }}">Logs</a>
+          {% for act in ['start','stop','restart'] %}
+          <form method="post" action="{{ url_for('services.manage') }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="unit" value="{{ s.name }}">
+            <input type="hidden" name="scope" value="{{ s.scope }}">
+            <input type="hidden" name="action" value="{{ act }}">
+            <button class="btn" type="submit" data-confirm="Выполнить {{ act }} для {{ s.name }}?">{{ act }}</button>
+          </form>
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

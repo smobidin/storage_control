@@ -1,0 +1,14 @@
+storage-control/.venv/
+storage-control/__pycache__/
+storage-control/app/__pycache__/
+storage-control/*.pyc
+storage-control/.env
+storage-control/instance/
+*.pyc
+__pycache__/
+.env
+*.env
+secrets.env
+.venv
+
+/doc/

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block content %}
+<h1>Updates</h1>
+
+<div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;">
+  <div class="card">
+    <h3>Immich</h3>
+    <div class="muted" style="margin-bottom:8px;">Текущая: <strong>{{ immich_current }}</strong><br>Доступная: <strong>{{ immich_latest or immich_current }}</strong>
+      {% if immich_available %}<span class="badge inactive">обновление доступно</span>{% elif not immich_release_error %}<span class="badge active">актуальная</span>{% endif %}
+      {% if immich_release_error %}<div class="muted" style="color:#fca5a5;">Проверка не удалась: {{ immich_release_error }}</div>{% endif %}
+    </div>
+    <form method="post" action="{{ url_for('updates.run_immich') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <select name="tag" style="width:100%;padding:6px;margin-bottom:8px;">
+        {% for t in immich_tags %}<option value="{{ t }}" {% if loop.first %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+      <button class="btn ok" type="submit" data-confirm="Запустить обновление Immich? Операция может изменить установленную версию.">Run update</button>
+    </form>
+    <form method="post" action="{{ url_for('updates.prepare_preserve_route') }}" style="margin-top:8px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="target" value="immich">
+      <button class="btn" type="submit" data-confirm="Создать точку восстановления Immich перед обновлением?">Prepare to update</button>
+    </form>
+    {% if immich_available %}
+    <details style="margin-top:10px;" open>
+      <summary class="muted" style="cursor:pointer;">Changelog {{ immich_latest }}</summary>
+      {% if immich_release_url %}<div style="margin:6px 0;"><a href="{{ immich_release_url }}" target="_blank">Страница релиза</a></div>{% endif %}
+      <pre style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto;">{{ immich_changelog }}</pre>
+      <h4 style="margin-top:8px;">Ключевые шаги миграции</h4>
+      <ul>
+      {% for step in immich_migration_steps %}<li>{{ step }}</li>{% else %}<li class="muted">Явных шагов миграции в changelog не найдено.</li>{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h3>Nextcloud</h3>
+    <div class="muted" style="margin-bottom:8px;">Текущая: <strong>{{ nextcloud_current }}</strong><br>Доступная: <strong>{{ nextcloud_latest or nextcloud_current }}</strong>
+      {% if nextcloud_available %}<span class="badge inactive">обновление доступно</span>{% elif not nextcloud_release_error %}<span class="badge active">актуальная</span>{% endif %}
+      {% if nextcloud_release_error %}<div class="muted" style="color:#fca5a5;">Проверка не удалась: {{ nextcloud_release_error }}</div>{% endif %}
+    </div>
+    <form method="post" action="{{ url_for('updates.run_nextcloud') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <select name="tag" style="width:100%;padding:6px;margin-bottom:8px;">
+        {% for t in nextcloud_tags %}<option value="{{ t }}" {% if loop.first %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+      <button class="btn ok" type="submit" data-confirm="Запустить обновление Nextcloud? Операция может изменить установленную версию.">Run update</button>
+    </form>
+    <form method="post" action="{{ url_for('updates.prepare_preserve_route') }}" style="margin-top:8px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="target" value="nextcloud">
+      <button class="btn" type="submit" data-confirm="Создать точку восстановления Nextcloud перед обновлением?">Prepare to update</button>
+    </form>
+    {% if nextcloud_available %}
+    <details style="margin-top:10px;" open>
+      <summary class="muted" style="cursor:pointer;">Changelog {{ nextcloud_latest }}</summary>
+      {% if nextcloud_release_url %}<div style="margin:6px 0;"><a href="{{ nextcloud_release_url }}" target="_blank">Страница релиза</a></div>{% endif %}
+      <pre style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto;">{{ nextcloud_changelog }}</pre>
+      <h4 style="margin-top:8px;">Ключевые шаги миграции</h4>
+      <ul>
+      {% for step in nextcloud_migration_steps %}<li>{{ step }}</li>{% else %}<li class="muted">Явных шагов миграции в changelog не найдено. Проверьте официальный ченжлог Nextcloud и заметки к релизу.</li>{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h3>Preserves</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Target</th><th>From version</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for p in preserves %}
+      <tr data-preserve-id="{{ p.id }}">
+        <td>{{ p.id }}</td>
+        <td>{{ p.target }}</td>
+        <td>{{ p.from_version or '-' }}</td>
+        <td>{{ p.status }}</td>
+        <td>{{ p.created_at }}</td>
+        <td>
+          <form method="post" action="{{ url_for('updates.restore_preserve_route', pid=p.id) }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn" type="submit" data-confirm="Восстановить состояние из пресета {{ p.id }}? Это откатит код, БД и конфиги.">Restore</button>
+          </form>
+          <button class="btn" type="button" onclick="openPreserveLog({{ p.id }})">Log</button>
+          <form method="post" action="{{ url_for('updates.delete_preserve_route', pid=p.id) }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn danger" type="submit" data-confirm="Удалить пресет {{ p.id }} и его файлы?">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">Нет пресетов.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="card">
+  <h3>Recent runs</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Target</th><th>From</th><th>To</th><th>Status</th><th>Started</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr data-runid="{{ r.id }}">
+        <td>{{ r.id }}</td>
+        <td>{{ r.target }}</td>
+        <td>{{ r.from_version }}</td>
+        <td>{{ r.to_version }}</td>
+        <td class="run-status">{{ r.status }}</td>
+        <td>{{ r.started_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Update progress (latest)</h3>
+  <div class="muted" style="margin-bottom:8px;">Status: <strong id="runstatus">unknown</strong></div>
+  <ul id="runsteps" style="font-size:13px;"></ul>
+  <pre id="runlog" style="white-space:pre-wrap;font-size:12px;max-height:400px;overflow:auto;"></pre>
+</div>
+
+<div class="card">
+  <h3>Preserve progress (latest)</h3>
+  <pre id="preservelog" style="white-space:pre-wrap;font-size:12px;max-height:300px;overflow:auto;"></pre>
+</div>
+<script>
+async function pollPreserveLatest() {
+  const row = document.querySelector('tbody tr[data-preserve-id]');
+  if (!row) return;
+  const id = row.getAttribute('data-preserve-id');
+  try {
+    const r = await fetch('/updates/preserve/' + id + '/api');
+    const d = await r.json();
+    document.getElementById('preservelog').textContent = (d.log_tail || '') + '\nSTATUS: ' + d.status;
+  } catch(e) { console.error(e); }
+}
+setInterval(pollPreserveLatest, 5000);
+pollPreserveLatest();
+</script>
+<div id="preserveLogModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;padding:20px;">
+  <div style="max-width:960px;margin:4vh auto;background:var(--panel);border:1px solid #334155;border-radius:10px;padding:16px;max-height:86vh;overflow:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <strong id="preserveLogTitle">Preserve log</strong>
+      <button class="btn" type="button" onclick="closePreserveLog()">Close</button>
+    </div>
+    <pre id="preserveLogBody" style="white-space:pre-wrap;font-size:12px;max-height:72vh;overflow:auto;"></pre>
+  </div>
+</div>
+<script>
+async function openPreserveLog(id) {
+  document.getElementById('preserveLogModal').style.display='block';
+  document.getElementById('preserveLogTitle').textContent='Preserve #' + id + ' log';
+  document.getElementById('preserveLogBody').textContent='Loading...';
+  try {
+    const r = await fetch('/updates/preserve/' + id + '/log');
+    const text = await r.text();
+    document.getElementById('preserveLogBody').textContent = text || '(empty log)';
+  } catch (e) {
+    document.getElementById('preserveLogBody').textContent = 'ERROR: ' + e;
+  }
+}
+function closePreserveLog() {
+  document.getElementById('preserveLogModal').style.display='none';
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closePreserveLog(); });
+</script>
+<script>
+async function pollLatest() {
+  const rows = Array.from(document.querySelectorAll('tbody tr[data-runid]'));
+  if (!rows.length) return;
+  const id = rows[0].getAttribute('data-runid');
+  try {
+    const r = await fetch('/updates/api/runs/' + id);
+    const d = await r.json();
+    document.getElementById('runlog').textContent = (d.log_tail||'') + '\nSTATUS: ' + d.status;
+    const st = rows[0].querySelector('.run-status');
+    if (st) st.textContent = d.status;
+    const runStatus = document.getElementById('runstatus');
+    if (runStatus) runStatus.textContent = d.status;
+    const runSteps = document.getElementById('runsteps');
+    if (runSteps) {
+      runSteps.innerHTML = '';
+      for (const step of (d.steps || [])) {
+        const li = document.createElement('li');
+        li.textContent = step.name + ': ' + step.status + (step.rc != null ? ' (rc=' + step.rc + ')' : '');
+        runSteps.appendChild(li);
+      }
+    }
+  } catch(e) { console.error(e); }
+}
+pollLatest();
+setInterval(pollLatest, 5000);
+</script>
+{% endblock %}

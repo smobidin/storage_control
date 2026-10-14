@@ -1,0 +1,9 @@
+# Allow storage user to manage whitelisted services/timers without password
+storage ALL=(root) NOPASSWD: /bin/systemctl status *, /bin/systemctl is-active *, /bin/systemctl is-enabled *
+storage ALL=(root) NOPASSWD: /bin/systemctl start nginx, /bin/systemctl stop nginx, /bin/systemctl restart nginx, /bin/systemctl reload nginx
+storage ALL=(root) NOPASSWD: /bin/systemctl start php8.5-fpm, /bin/systemctl stop php8.5-fpm, /bin/systemctl restart php8.5-fpm
+storage ALL=(root) NOPASSWD: /bin/systemctl start postgresql, /bin/systemctl stop postgresql, /bin/systemctl restart postgresql
+storage ALL=(root) NOPASSWD: /bin/systemctl start redis-server, /bin/systemctl stop redis-server, /bin/systemctl restart redis-server
+storage ALL=(root) NOPASSWD: /bin/systemctl restart php8.5-fpm
+storage ALL=(root) NOPASSWD: /usr/bin/mdadm --detail *
+storage ALL=(root) NOPASSWD: /usr/sbin/smartctl -a *

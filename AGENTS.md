@@ -1,0 +1,76 @@
+# AGENTS.md
+
+Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo root; Flask app is in `storage-control/`.
+
+## Sources of truth
+
+- `doc/system.md` — installed NAS hosts/paths.
+- `doc/pnan.md` — implementation plan.
+- Executable config overrides docs. `storage-control/app/config.py` loads `.env` from the **repository root** via `Path(__file__).resolve().parents[2]`, despite `storage-control/README.md` saying `storage-control/.env`.
+- If docs conflict with config or code, trust config/code.
+
+## App shape
+
+- Entrypoint: `storage-control/wsgi.py` -> `create_app()` in `storage-control/app/__init__.py`.
+- Blueprints there: auth, dashboard, services, backups, planner (`/scheduler`), updates.
+- All templates are under `storage-control/app/templates`; blueprints register it via `../../templates`.
+- SQLite DB is auto-created at `$STORAGE_CONTROL_DATA/app.db`.
+- Admin is seeded only if `ADMIN_PASSWORD` is set; an existing admin password is reset.
+- APScheduler starts unless `ENABLE_SCHEDULER=false`; startup failure is logged but app still boots.
+
+## Run / verify (from `storage-control/`)
+
+- Install: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+- Dev: `SECRET_KEY=... ADMIN_PASSWORD=... ENABLE_SCHEDULER=true .venv/bin/python -c "from wsgi import app; app.run(host='0.0.0.0', port=8765)"`
+- Prod: `.venv/bin/gunicorn -w 1 -k gthread --threads 4 -b 0.0.0.0:8765 wsgi:app`
+- User service is installed by `tools/install.sh`; it binds `0.0.0.0:8765` by default (all interfaces), so use firewall/nginx or install with `--bind 127.0.0.1:8765`.
+- No automated tests. After edits: `.venv/bin/python -m compileall -q .`, then `curl -s http://127.0.0.1:8765/login`.
+- Keep exactly one Gunicorn worker; long update/preserve jobs run in daemon threads and use subprocess.
+
+## Environment and data
+
+- `SECRET_KEY`, `ADMIN_PASSWORD`, optional `ADMIN_USERNAME`, `STORAGE_HOME`, `STORAGE_CONTROL_DATA`, `ENABLE_SCHEDULER`.
+- Data/logs/runs are under `$STORAGE_CONTROL_DATA` (default `/home/storage/.local/share/storage-control`).
+- Backups are under `/mnt/backup/backups`.
+
+## Dashboard and health gotchas
+
+- App Health card must stay above Host; it shows service badges for Immich and Nextcloud plus current/available versions.
+- App Health and service table depend on `/api/health/services`; the route stays in `dashboard/routes.py` because dashboard JS calls it.
+- Other live endpoints are `/api/health/summary`, `/api/health/smart`, `/api/health/smart/status`, and `/updates/api/availability`.
+- Dashboard version availability comes from GitHub Releases and is cached for about 5 minutes.
+- Disks shows only physical block-backed filesystems; loop/virtual and non-`/dev/` devices are deliberately filtered in `app/collectors/system.py`.
+- Temperature collection uses `psutil.sensors_temperatures()` with fallback to the `sensors` CLI.
+- Fan support was removed as unused; do not reintroduce a `fans` field unless backed by real data.
+- Jinja templates must have valid tag pairing; missing openers previously caused 500s.
+- Python files must not end with stray markers such as `PY`.
+
+## Update and preserve operations
+
+- Updates page reports GitHub release availability and changelog for Immich and Nextcloud.
+- Build JS step commonly fails because `npm` is absent on host; Nextcloud ships prebuilt `dist`, so this is usually non-fatal.
+- Nextcloud updates must fetch without recursive submodules: use `git fetch origin --tags --no-recurse-submodules`; the runner already does.
+- After checkout, Nextcloud needs `git submodule update --init --recursive`. If this is skipped, `3rdparty` stays on the old commit and `occ upgrade` can fail with missing paths / Symfony errors.
+- `occ upgrade` may exit 1 due to stale optional app references even when status and DB are fine. Verify `php occ status`, especially `versionstring`, `maintenance`, and `needsDbUpgrade`.
+- Preserve snapshots live under `/mnt/backup/backups/preserves` and are tracked in `update_preserve`. They support prepare, restore, delete, and live logs through `/updates/preserve/<id>/{log,api,...}`.
+- Prepare stashes local Git changes before backup, so preserve's file copies may predate the stash. For custom tracked files such as `.htaccess`, recover them from `git show refs/preserve/<id>:...` rather than from the copied file.
+- On failure the runner turns maintenance mode off where possible; verify it manually before retrying.
+
+- `Runner app/runners/smart_monitor.py` performs the nightly SMART check; it stores `SmartDiskState` and active `SmartAlert` records. Startup also runs one baseline check asynchronously.
+- SMART discovery is dynamic from `/sys/block`; loops, RAID, RAM, empty, and virtual block devices are excluded.
+- Dashboard renders SMART alarm rows red and lists active alarms from `/api/health/smart/status`.
+
+## System-service access
+
+- Whitelisted operations are in `scripts/sudoers-storage-control`.
+- Collector endpoints depend on `sudo mdadm --detail /dev/md0`, `sudo smartctl -a` for physical block devices, and system service controls.
+- Update/install flows assume systemd units such as `nginx`, `php8.5-fpm`, `postgresql`, `redis-server`, `immich-server`, and `immich-ml`.
+
+## Git
+
+- Branch `main`, remote `origin` = `git@github.com-storage_gh:smobidin/storage_control.git` (GitHub, public).
+- History was squashed to a single commit and force-pushed; the old repo was deleted so old SHAs are gone server-side.
+- Git hooks live in `tools/githooks/` (enabled locally via `git config core.hooksPath tools/githooks`).
+- `tools/githooks/pre-commit` runs `gitleaks protect --staged`; if gitleaks is not installed the commit is blocked (one-off bypass: `SKIP_GITLEAKS=1 git commit ...`).
+- CI scans full history and tree on every push/PR: `.github/workflows/gitleaks.yml` (`gitleaks git .` + `gitleaks dir .`).
+- Secrets never enter git: `.gitignore` covers `*.env`/`secrets.env`; real secrets live in `~/.config/storage-control/secrets.env`.

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Scheduler{% endblock %}
+{% block content %}
+<h1>Scheduler</h1>
+
+<div class="card">
+  <h3>Create custom job</h3>
+  <form method="post" action="{{ url_for('scheduler.create_job') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input name="name" placeholder="job name" required style="padding:6px;margin-right:6px;">
+    <input name="schedule_cron" placeholder="cron, e.g. 0 3 * * *" style="padding:6px;margin-right:6px;">
+    <label><input type="checkbox" name="enabled" checked> enabled</label><br>
+    <textarea name="command" placeholder="bash command" rows="3" style="width:100%;margin-top:8px;"></textarea>
+    <textarea name="notes" placeholder="notes" rows="1" style="width:100%;margin-top:4px;"></textarea>
+    <button class="btn ok" type="submit" style="margin-top:8px;" data-confirm="Создать запланированное задание?">Create</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>APScheduler jobs</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Trigger</th><th>Next run</th></tr></thead>
+    <tbody>
+    {% for j in aps_jobs %}
+      <tr><td>{{ j.id }}</td><td>{{ j.trigger }}</td><td>{{ j.next }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Custom jobs</h3>
+  <table>
+    <thead><tr><th>Name</th><th>Cron</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Delete</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td>{{ j.name }}</td>
+        <td>{{ j.schedule_cron or '-' }}</td>
+        <td>{{ j.enabled }}</td>
+        <td>{{ j.last_run_at or '-' }}</td>
+        <td>{{ j.last_status or '-' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('scheduler.delete_job', jid=j.id) }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn danger" type="submit" data-confirm="Удалить задание {{ j.name }}?">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>System/user timers</h3>
+  <table>
+    <thead><tr><th>Scope</th><th>Unit</th><th>Raw</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for t in timers %}
+      <tr>
+        <td>{{ t.scope }}</td>
+        <td>{{ t.unit }}</td>
+        <td style="font-size:11px;">{{ t.raw }}</td>
+        <td>
+          {% for act in ['enable','disable','start','stop'] %}
+          <form method="post" action="{{ url_for('scheduler.toggle_timer') }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="unit" value="{{ t.unit }}">
+            <input type="hidden" name="scope" value="{{ t.scope }}">
+            <input type="hidden" name="action" value="{{ act }}">
+            <button class="btn" type="submit" data-confirm="Выполнить {{ act }} для {{ t.unit }}?">{{ act }}</button>
+          </form>
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Storage Control{% endblock %}</title>
+<style>
+  :root { --bg:#0f172a; --panel:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--fg); }
+  header { background:#111827; padding:12px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; border-bottom:1px solid #334155; }
+  header a { color:var(--fg); text-decoration:none; font-weight:500; padding:4px 8px; border-radius:6px; }
+  header a:hover { color:var(--accent); background:#1f2937; }
+  header a.active { color:#0f172a; background:var(--accent); font-weight:700; }
+  .brand { font-weight:700; color:var(--accent); margin-right:8px; }
+  main { padding:20px; max-width:1400px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid #334155; border-radius:10px; padding:16px; margin-bottom:16px; }
+  .grid { display:grid; gap:16px; }
+  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); }
+  .muted { color:var(--muted); font-size:13px; }
+  .btn { background:#334155; color:var(--fg); border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .btn:hover { background:#475569; }
+  .btn.danger { background:#7f1d1d; }
+  .btn.ok { background:#14532d; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:8px 10px; border-bottom:1px solid #334155; text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  .badge { padding:2px 8px; border-radius:999px; font-size:12px; }
+  .badge.active { background:#14532d; color:#86efac; }
+  .badge.inactive { background:#7f1d1d; color:#fca5a5; }
+  .badge.unknown { background:#334155; color:var(--muted); }
+  .stat { font-size:28px; font-weight:700; }
+  .bar { height:8px; background:#0f172a; border-radius:4px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--accent); }
+  #flashes { margin-bottom:12px; }
+  .flash { padding:8px 12px; border-radius:6px; margin-bottom:6px; }
+  .flash.danger { background:#7f1d1d; }
+  .flash.success { background:#14532d; }
+  .flash.info { background:#1e3a8a; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header>
+  <span class="brand">Storage Control</span>
+<a href="{{ url_for('dashboard.index') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('dashboard') and request.endpoint != 'dashboard.help_page' else '' }}">Dashboard</a>
+  <a href="{{ url_for('services.index') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('services') else '' }}">Services</a>
+  <a href="{{ url_for('backups.index') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('backups') else '' }}">Backups</a>
+  <a href="{{ url_for('scheduler.index') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('scheduler') else '' }}">Scheduler</a>
+  <a href="{{ url_for('updates.index') }}" class="{{ 'active' if request.endpoint and request.endpoint.startswith('updates') else '' }}">Updates</a>
+  <a href="{{ url_for('dashboard.help_page') }}" class="btn {{ 'active' if request.endpoint == 'dashboard.help_page' else '' }}" title="Documentation" style="font-weight:700;">?</a>
+  <form method="post" action="{{ url_for('auth.logout') }}" style="margin-left:auto;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn" type="submit" data-confirm="Выйти из панели?">Logout</button>
+  </form>
+</header>
+<main>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div id="flashes">
+      {% for cat, msg in messages %}
+        <div class="flash {{ cat }}">{{ msg }}</div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+<script>
+    document.addEventListener("submit", function (e) {
+      const form = e.target;
+      if (!form || !form.getAttribute) return;
+      const btn = e.submitter || form.querySelector('button[type="submit"]');
+      const msg = (btn && btn.getAttribute("data-confirm")) || form.getAttribute("data-confirm");
+      if (msg && !window.confirm(msg)) e.preventDefault();
+    });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

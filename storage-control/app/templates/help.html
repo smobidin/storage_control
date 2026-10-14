@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Documentation{% endblock %}
+{% block head %}
+<style>
+  .help { line-height:1.6; }
+  .help h1,.help h2,.help h3 { color:var(--accent); margin-top:1.2em; }
+  .help pre { background:#020617; padding:12px; border-radius:8px; overflow:auto; border:1px solid #334155; }
+  .help code { background:#020617; padding:2px 4px; border-radius:4px; }
+  .help table { border-collapse:collapse; width:100%; }
+  .help th,.help td { border:1px solid #334155; padding:6px 10px; }
+  .help a { color:var(--accent); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="card help">
+  {{ readme_html|safe }}
+</div>
+{% endblock %}

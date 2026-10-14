@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="card">
+  <h3>App Health</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+    <div>Immich: <span id="immich-health" class="badge unknown">checking</span></div>
+    <div>Nextcloud: <span id="nextcloud-health" class="badge unknown">checking</span></div>
+  </div>
+  <div class="muted" id="immich-health-meta"></div>
+  <div class="muted" id="nextcloud-health-meta"></div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:13px;">
+    <div>Immich версия: текущая <strong id="immich-version-current">-</strong>, доступная <strong id="immich-version-latest">-</strong> <span id="immich-version-badge" class="badge unknown">checking</span></div>
+    <div>Nextcloud версия: текущая <strong id="nextcloud-version-current">-</strong>, доступная <strong id="nextcloud-version-latest">-</strong> <span id="nextcloud-version-badge" class="badge unknown">checking</span></div>
+  </div>
+  <div class="muted" id="immich-version-error" style="color:#fca5a5;"></div>
+  <div class="muted" id="nextcloud-version-error" style="color:#fca5a5;"></div>
+</div>
+
+<div class="card">
+  <h3>Host</h3>
+  <div id="host" class="muted">loading...</div>
+</div>
+
+<div class="grid grid-3">
+  <div class="card">
+    <h3>CPU</h3>
+    <div class="stat" id="cpu-pct">--%</div>
+    <div class="muted" id="cpu-meta"></div>
+    <div class="bar"><div id="cpu-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <h3>Memory</h3>
+    <div class="stat" id="mem-pct">--%</div>
+    <div class="muted" id="mem-meta"></div>
+    <div class="bar"><div id="mem-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <h3>Swap</h3>
+    <div class="stat" id="swap-pct">--%</div>
+    <div class="muted" id="swap-meta"></div>
+    <div class="bar"><div id="swap-bar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Temperatures</h3>
+  <div id="temps" class="grid grid-3"></div>
+</div>
+
+<div class="card">
+  <h3>Disks</h3>
+  <div id="disks"></div>
+</div>
+
+<div class="card">
+  <h3>SMART</h3>
+  <table id="smart-table">
+    <thead><tr><th>Device</th><th>Model</th><th>Health</th><th>Temp</th><th>Reallocated</th><th>Pending</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="smart-alarms-block" style="margin-top:14px;padding:12px;border:1px solid #334155;border-radius:8px;background:#0f172a;">
+    <h4 id="smart-alarms-title" style="margin:0 0 8px;color:#94a3b8;">Alarms</h4>
+    <div id="smart-alerts"></div>
+  </div>
+</div>
+<div class="card">
+  <h3>RAID Status</h3>
+  <div id="raid"></div>
+</div>
+
+<div class="card">
+  <h3>Services</h3>
+  <table id="svc-table">
+    <thead><tr><th>Unit</th><th>Scope</th><th>Group</th><th>Status</th><th>Enabled</th><th>Since</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const fmtBytes = b => { if(!b) return '-'; const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<u.length-1){b/=1024;i++;} return b.toFixed(1)+' '+u[i]; };
+async function refresh(){
+  try {
+    const r = await fetch('/api/health/summary');
+    const d = await r.json();
+    document.getElementById('host').textContent = d.hostname + ' — ' + d.os + ' — uptime ' + Math.round(d.uptime_seconds/3600) + 'h';
+    document.getElementById('cpu-pct').textContent = d.cpu.percent_total.toFixed(1) + '%';
+    document.getElementById('cpu-meta').textContent = d.cpu.count_logical + ' cores @ ' + (d.cpu.freq_mhz||0).toFixed(0) + ' MHz · load ' + d.cpu.loadavg.map(x=>x.toFixed(2)).join(', ');
+    document.getElementById('cpu-bar').style.width = d.cpu.percent_total + '%';
+    document.getElementById('mem-pct').textContent = d.memory.percent.toFixed(1) + '%';
+    document.getElementById('mem-meta').textContent = fmtBytes(d.memory.used) + ' / ' + fmtBytes(d.memory.total);
+    document.getElementById('mem-bar').style.width = d.memory.percent + '%';
+    document.getElementById('swap-pct').textContent = d.swap.percent.toFixed(1) + '%';
+    document.getElementById('swap-meta').textContent = fmtBytes(d.swap.used) + ' / ' + fmtBytes(d.swap.total);
+    document.getElementById('swap-bar').style.width = d.swap.percent + '%';
+    // temps
+    try {
+      let thtml = '';
+      for (const [chip, val] of Object.entries(d.temps||{})) {
+        if (Array.isArray(val)) {
+          for (const e of val) {
+            thtml += '<div class="card"><div class="muted">' + (e.label||chip) + '</div><div class="stat">' + (e.current!=null?e.current.toFixed(1):'-') + '°C</div><div class="muted">high ' + (e.high!=null?e.high.toFixed(0):'-') + ' · crit ' + (e.critical!=null?e.critical.toFixed(0):'-') + '</div></div>';
+          }
+        } else if (val && typeof val==='object') {
+          for (const [k,v] of Object.entries(val)) {
+            if (typeof v === 'number') thtml += '<div class="card"><div class="muted">' + chip + ' ' + k + '</div><div class="stat">' + v.toFixed(1) + '°C</div></div>';
+          }
+        }
+      }
+      document.getElementById('temps').innerHTML = thtml || '<div class="muted">n/a</div>';
+    } catch (e) {
+      document.getElementById('temps').innerHTML = '<div class="muted" style="color:#fca5a5;">temps error: ' + e.message + '</div>';
+    }
+
+    // disks
+    try {
+      const diskBox = document.getElementById('disks');
+      diskBox.innerHTML = '';
+      for (const dk of d.disks||[]) {
+        const usedPct = dk.percent || 0;
+        const freePct = Math.max(0, 100 - usedPct);
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;"><strong>' + dk.device + '</strong><span class="muted">' + dk.mountpoint + ' · ' + dk.fstype + '</span></div>' +
+          '<div class="bar multi"><div style="width:' + usedPct + '%;background:var(--accent);"></div><div style="width:' + freePct + '%;background:#475569;"></div></div>' +
+          '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:13px;"><span>Used ' + fmtBytes(dk.used) + ' (' + usedPct.toFixed(1) + '%)</span><span>Free ' + fmtBytes(dk.free) + '</span><span>Total ' + fmtBytes(dk.total) + '</span></div>';
+        diskBox.appendChild(card);
+      }
+      if (!diskBox.hasChildNodes()) diskBox.innerHTML = '<div class="muted">n/a</div>';
+    } catch (e) {
+      document.getElementById('disks').innerHTML = '<div class="muted" style="color:#fca5a5;">disks error: ' + e.message + '</div>';
+    }
+
+    // raid
+    try {
+      const rinfo = d.raid || {};
+      const md = rinfo.md0 || {};
+      const state = md.state || 'unknown';
+      const badgeCls = /clean|active/i.test(state) ? 'active' : 'inactive';
+      const raidHtml = '<div style="display:grid;gap:10px;"><div><span class="badge ' + badgeCls + '">' + state + '</span> <span class="muted">/dev/md0</span></div>' +
+        '<div class="grid grid-3"><div><div class="muted">RAID devices</div><div class="stat" style="font-size:20px;">' + (md.raid_devices!=null?md.raid_devices:'-') + '</div></div>' +
+        '<div><div class="muted">Active</div><div class="stat" style="font-size:20px;">' + (md.active_devices!=null?md.active_devices:'-') + '</div></div>' +
+        '<div><div class="muted">Failed</div><div class="stat" style="font-size:20px;">' + (md.failed_devices!=null?md.failed_devices:'-') + '</div></div></div>' +
+        '<details><summary class="muted" style="cursor:pointer;">raw mdstat / mdadm</summary><pre style="white-space:pre-wrap;font-size:11px;">' + (rinfo.raw||'') + '\n' + (rinfo.mdadm_detail||'') + '</pre></details></div>';
+      document.getElementById('raid').innerHTML = raidHtml;
+    } catch (e) {
+      document.getElementById('raid').innerHTML = '<div class="muted" style="color:#fca5a5;">raid error: ' + e.message + '</div>';
+    }
+  } catch (e) { console.error(e); }
+}
+
+async function refreshSvc(){
+  try {
+    const r = await fetch('/api/health/services');
+    const list = await r.json();
+    const tb = document.querySelector('#svc-table tbody');
+    tb.innerHTML = '';
+    for (const s of list) {
+      const tr = document.createElement('tr');
+      const cls = s.active === 'active' ? 'active' : (s.active === 'inactive' ? 'inactive' : 'unknown');
+      tr.innerHTML = `<td>${s.name}</td><td>${s.scope}</td><td>${s.group}</td><td><span class="badge ${cls}">${s.active}</span></td><td>${s.enabled}</td><td>${s.active_since||''}</td>`;
+      tb.appendChild(tr);
+    }
+
+    const immichCore = list.filter(x => x.group === 'immich' && x.name.endsWith('.service') && !x.name.includes('nightfix'));
+    const immichOk = immichCore.length > 0 && immichCore.every(x => x.active === 'active');
+    const immichBadge = document.getElementById('immich-health');
+    const immichMeta = document.getElementById('immich-health-meta');
+    if (immichBadge) {
+      immichBadge.className = 'badge ' + (immichOk ? 'active' : 'inactive');
+      immichBadge.textContent = immichOk ? 'OK' : 'DEGRADED';
+    }
+    if (immichMeta) immichMeta.textContent = immichCore.map(x => x.name + ': ' + x.active).join(' · ');
+
+    const ncNames = ['php8.5-fpm.service', 'nginx.service', 'redis-server.service', 'postgresql.service'];
+    const ncCore = list.filter(x => ncNames.includes(x.name));
+    const ncOk = ncCore.length === ncNames.length && ncCore.every(x => x.active === 'active');
+    const ncBadge = document.getElementById('nextcloud-health');
+    const ncMeta = document.getElementById('nextcloud-health-meta');
+    if (ncBadge) {
+      ncBadge.className = 'badge ' + (ncOk ? 'active' : 'inactive');
+      ncBadge.textContent = ncOk ? 'OK' : 'DEGRADED';
+    }
+    if (ncMeta) ncMeta.textContent = ncCore.map(x => x.name + ': ' + x.active).join(' · ');
+  } catch(e){ console.error(e); }
+}
+async function refreshSmart(){
+  try {
+    const r = await fetch('/api/health/smart');
+    const list = await r.json();
+    const tb = document.querySelector('#smart-table tbody');
+    tb.innerHTML = '';
+    for (const d of list) {
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-device', d.device);
+      tr.innerHTML = `<td>${d.device}</td><td>${d.model||'-'}</td><td>${d.health}</td><td>${d.temperature!=null?d.temperature+'°C':'-'}</td><td>${d.attributes.Reallocated_Sector_Ct??'-'}</td><td>${d.attributes.Current_Pending_Sector??'-'}</td>`;
+      tb.appendChild(tr);
+    }
+    await refreshSmartStatus();
+  } catch(e){ console.error(e); }
+}
+async function refreshSmartStatus(){
+  try {
+    const r = await fetch('/api/health/smart/status');
+    const d = await r.json();
+    const alertDiv = document.getElementById('smart-alerts');
+    const alertBlock = document.getElementById('smart-alarms-block');
+    const alertTitle = document.getElementById('smart-alarms-title');
+    const alerts = d.alerts || [];
+    if (alertBlock) {
+      alertBlock.style.borderColor = alerts.length ? '#7f1d1d' : '#334155';
+      alertBlock.style.background = alerts.length ? '#2b1212' : '#0f172a';
+    }
+    if (alertTitle) alertTitle.style.color = alerts.length ? '#fecaca' : '#94a3b8';
+    if (alertDiv) {
+      if (!alerts.length) alertDiv.innerHTML = '<div class="muted">Ночью алармов SMART не выявлено.</div>';
+      else alertDiv.innerHTML = alerts.map(a => '<div class="flash danger" style="background:#7f1d1d;border-left:4px solid #ef4444;">' + a.device + ' · ' + a.severity.toUpperCase() + ': ' + a.message + '</div>').join('');
+    }
+    const rows = document.querySelectorAll('#smart-table tbody tr');
+    const alertDevs = new Set(alerts.map(a => a.device));
+    rows.forEach(row => {
+      const dev = row.getAttribute('data-device');
+      if (alertDevs.has(dev)) {
+        row.style.background = '#7f1d1d';
+        if (row.cells[2]) row.cells[2].innerHTML = '<span class="badge inactive">ALARM</span>';
+      } else {
+        row.style.background = '';
+      }
+    });
+  } catch(e){ console.error(e); }
+}
+async function refreshUpdates(){
+  try {
+    const r = await fetch('/updates/api/availability');
+    const d = await r.json();
+    function apply(prefix, info){
+      info = info || {};
+      const cur = document.getElementById(prefix + '-version-current');
+      const lat = document.getElementById(prefix + '-version-latest');
+      const badge = document.getElementById(prefix + '-version-badge');
+      const err = document.getElementById(prefix + '-version-error');
+      if (cur) cur.textContent = info.current || '-';
+      if (lat) lat.textContent = info.latest || '-';
+      if (badge) {
+        badge.className = 'badge ' + (info.available ? 'inactive' : 'active');
+        badge.textContent = info.available ? 'available' : 'current';
+      }
+      if (err) err.textContent = info.error || '';
+    }
+    apply('immich', d.immich);
+    apply('nextcloud', d.nextcloud);
+  } catch(e){ console.error(e); }
+}
+refresh(); refreshSvc(); refreshSmart(); refreshUpdates();
+setInterval(refresh, 15000);
+setInterval(refreshSvc, 20000);
+setInterval(refreshSmart, 60000);
+setInterval(refreshUpdates, 300000);
+</script>
+{% endblock %}

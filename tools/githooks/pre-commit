@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pre-commit: блокирует коммит, если в staged-изменениях есть секреты.
+# Включается один раз:  git config core.hooksPath tools/githooks
+set -euo pipefail
+
+if [ "${SKIP_GITLEAKS:-0}" = "1" ]; then
+  echo "[pre-commit] gitleaks пропущен (SKIP_GITLEAKS=1)" >&2
+  exit 0
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-commit] ОШИБКА: gitleaks не найден в PATH." >&2
+  echo "  Коммит остановлен: без проверки секреты могут уехать в GitHub." >&2
+  echo "  Установка:" >&2
+  echo "    curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz -C ~/.local/bin gitleaks" >&2
+  echo "    (или: sudo apt-get install -y gitleaks)" >&2
+  echo "  Разовый обход: SKIP_GITLEAKS=1 git commit ..." >&2
+  exit 1
+fi
+
+if gitleaks protect --staged --no-banner --redact; then
+  echo "[pre-commit] gitleaks: секретов не найдено"
+  exit 0
+fi
+
+echo "[pre-commit] gitleaks: НАЙДЕНЫ СЕКРЕТЫ — коммит отклонён." >&2
+echo "  Уберите секрет из staged-файлов или добавьте строку в .gitleaksignore" >&2
+echo "  (только для ложных срабатываний). Разовый обход: SKIP_GITLEAKS=1 git commit" >&2
+exit 1

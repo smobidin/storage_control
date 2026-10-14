@@ -1,0 +1,30 @@
+# Storage Control — systemd user unit template.
+#
+# This file is rendered by tools/install.sh into:
+#   ~/.config/systemd/user/storage-control.service
+#
+# The @...@ placeholders are replaced with the environment chosen at install
+# time. Do not symlink or copy this file directly into systemd; run the
+# installer instead.
+
+[Unit]
+Description=Storage Control (Flask web console)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@APP_DIR@
+# The leading '-' makes the file optional: if it is missing the app still
+# starts with its built-in defaults, but admin bootstrap and secrets should be
+# configured in this file for a real deployment.
+EnvironmentFile=-@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+
+# Long update/preserve jobs run in daemon threads, so keep exactly one worker.
+ExecStart=@VENV_DIR@/bin/gunicorn -w @WORKERS@ -k gthread --threads @THREADS@ -b @BIND@ wsgi:app
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
