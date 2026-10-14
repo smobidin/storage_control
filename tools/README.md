@@ -164,6 +164,33 @@ journalctl --user -u backup-home-rsync.service -n 30
 - `rc=24` (файлы исчезли во время копирования) считается нормой при живой
   системе, остальные ненулевые коды — ошибка с логом в `logs/`.
 
+## tools/backup_immich_nc.sh — дампы БД и конфигов
+
+Работает парой к зеркалу выше: таймер `backup-immich-nc.timer` в **04:00**
+кладёт в `/mnt/backup/backups` то, что нужно для быстрого восстановления
+сервисов (ротация — 14 дней):
+
+| Архив | Содержимое |
+|---|---|
+| `immich/immich_db_<ts>.dump` | `pg_dump -Fc` базы immich |
+| `immich/immich_config_<ts>.tar.gz` | `immich/.env`, юниты immich-server/immich-ml/nightfix, `night_fix_thumbnails.cjs` |
+| `nextcloud/nextcloud_db_<ts>.dump` | `pg_dump -Fc` базы nextcloud |
+| `nextcloud/nextcloud_config_<ts>.tar.gz` | `nextcloud/config/config.php` |
+| `nginx_config_<ts>.tar.gz` | `sites-available/{proxy-sites,nextcloud}`, `conf.d/websocket.conf`, letsencrypt |
+| `postgres_config_<ts>.tar.gz` | `postgresql.conf`, `pg_hba.conf` (через `sudo`) |
+| `backup_units_<ts>.tar.gz` | юниты и таймеры обоих бэкапов |
+| `pkg_list_<ts>.txt` | `dpkg --get-selections` |
+
+```bash
+systemctl --user start backup-immich-nc.service   # разовый прогон
+journalctl --user -u backup-immich-nc.service -n 30
+```
+
+Скрипту нужен passwordless `sudo` для `tar` из `/etc/postgresql/18/main` —
+разрешение лежит в `/etc/sudoers.d/storage`. Сам дом целиком копирует
+`backup_home_rsync.sh`, поэтому здесь приоритет у консистентности (дампы БД
+через `pg_dump`, а не rsync по живой базе).
+
 ## Удаление сервиса
 
 ```bash
