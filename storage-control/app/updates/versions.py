@@ -43,15 +43,32 @@ def nextcloud_current():
     return (out or "unknown") if rc == 0 else "unknown"
 
 
+def nextcloud_current_major():
+    current = nextcloud_current()
+    match = re.search(r"(\d+)\.", current)
+    if match:
+        return int(match.group(1))
+    info = release_info("nextcloud", current)
+    latest = info.get("latest") or ""
+    match = re.search(r"(\d+)\.", latest)
+    return int(match.group(1)) if match else 0
+
+
 def nextcloud_tags(limit=30):
     # avoid blocking the request with network fetch; update run performs fetch
+    major = nextcloud_current_major()
     rc, out = _run(["git", "tag", "--sort=-creatordate"], NEXTCLOUD_ROOT)
     if rc != 0:
         return []
     out_tags = []
     for line in out.splitlines():
         t = line.strip()
-        if t.startswith("v") and t.split(".")[0].lstrip("v") == "34":
+        # stable tags only: v35.0.1, never v35.0.2rc2 or v35.0.1-rc1
+        if not re.fullmatch(r"v\d+\.\d+\.\d+", t):
+            continue
+        tag_major = t.split(".")[0].lstrip("v")
+        # keep the installed major line and anything newer; no downgrades
+        if int(tag_major) >= major:
             out_tags.append(t)
     return out_tags[:limit]
 
