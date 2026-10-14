@@ -99,6 +99,35 @@ journalctl --user -u immich-nightfix.service -n 20
 Код возврата: 0 — чинить было нечего или всё починено; 1 — что-то осталось
 без thumbhash (в journal попадает список `FAIL <asset id>`).
 
+## tools/immich/patches — локальные патчи immich
+
+`patches/0001-storage-statfs-bsize.patch` — правка `checkDiskUsage` в
+`server/src/repositories/storage.repository.ts`: `frsize` → `bsize`. Node на
+этом хосте не возвращает `frsize` в `fs.statfs`, поэтому `available/free/total`
+уходили в `NaN` на дашборде.
+
+Тот же коммит лежит веткой **`local/patches`** в репозитории `~/immich/src`
+(автор `storage <storage@nas.local>`, там не настроена глобальная идентичность).
+Ветку в origin не пушить: `origin` у immich — это апстрим `immich-app/immich`.
+Копия патча в этом репозитории нужна как страховка, если immich-репо пересоздадут.
+
+Патрим **не входит** в шаги апдейтера, поэтому после каждого `git checkout
+<tag>` его надо вернуть:
+
+```bash
+cd ~/immich/src
+git cherry-pick local/patches              # быстрый путь
+# если в новом теге контекст сместился:
+git cherry-pick --abort
+git apply --3way ~/dev/stoage_system_tools/tools/immich/patches/0001-storage-statfs-bsize.patch
+# если ветка вдруг потерялась — достаём из патч-файла выше
+pnpm --filter @immich/server build         # иначе правка не попадёт в dist
+```
+
+Собрать заново можно и `storage-control`-кнопкой: апдейтер делает
+`pnpm install`/`build` сам, останется только вернуть патч **до** запуска
+обновления.
+
 ## Удаление сервиса
 
 ```bash

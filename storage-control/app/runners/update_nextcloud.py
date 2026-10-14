@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-import os, json
+import os, json, re, shutil
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
@@ -60,6 +60,87 @@ def _occ_status_problems(out, expect_version=None, check_maintenance=True):
         problems.append(f"versionstring={info.get('versionstring')!r}, "
                         f"expected {expect_version.lstrip('v')}")
     return problems
+
+
+def _viewer_max_major(info_path):
+    """Read <nextcloud max-version=".."> from an app's info.xml, or None."""
+    try:
+        text = Path(info_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(r"<nextcloud[^>]*\bmax-version=[\"'](\d+)[\"']", text)
+    return int(m.group(1)) if m else None
+
+
+def _sync_viewer(tag, log_path):
+    """Make sure apps/viewer is present and supports the version we upgraded to.
+
+    The server's .gitignore ignores /apps/*, so `git checkout <tag>` neither
+    updates nor removes viewer -- and on a major version jump Nextcloud marks
+    the old one incompatible and disables it. Without viewer the LoadViewer
+    event never fires, richdocuments never registers its handler and clicking
+    a document downloads the file instead of opening Collabora. The app store
+    does not carry viewer either, so the release tarball is the only source.
+    """
+    version = str(tag).lstrip("v")
+    try:
+        major = int(version.split(".")[0])
+    except ValueError:
+        return 1, f"cannot parse major version out of tag {tag!r}\n"
+
+    viewer_dir = NEXTCLOUD_ROOT / "apps" / "viewer"
+    installed_major = _viewer_max_major(viewer_dir / "appinfo" / "info.xml")
+    if installed_major is not None and installed_major >= major:
+        msg = f"viewer max-version={installed_major} covers server {version}; nothing to do\n"
+        log_write(log_path, msg)
+        return 0, msg
+
+    # No viewer, or one left over from the previous major version: pull it out
+    # of the tarball that matches the release we just checked out.
+    url = f"https://download.nextcloud.com/server/releases/nextcloud-{version}.tar.bz2"
+    log_write(log_path, f"viewer missing or incompatible (max-version={installed_major}); "
+                        f"refreshing from {url}\n")
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    archive = RUNS_DIR / f"nextcloud-{version}.tar.bz2"
+    rc, out = run_cmd(["curl", "-sSfL", "--retry", "3", "--connect-timeout", "30",
+                       "-o", str(archive), url], log_path=log_path, timeout=7200)
+    if rc != 0:
+        return rc, out + "failed to download release tarball for viewer refresh\n"
+
+    # Unpack somewhere Nextcloud does not scan for apps, so a truncated
+    # download can never end up as a half-written installed app.
+    stage = RUNS_DIR / "viewer_stage"
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir(parents=True)
+    rc, out = run_cmd(["tar", "-xjf", str(archive), "-C", str(stage),
+                       "--strip-components=1", "nextcloud/apps/viewer"],
+                      log_path=log_path, timeout=600)
+    if rc != 0:
+        return rc, out
+    staged_major = _viewer_max_major(stage / "appinfo" / "info.xml")
+    if staged_major is None or staged_major < major:
+        return 1, (f"tarball viewer max-version={staged_major} does not cover "
+                   f"server {version}\n")
+
+    if viewer_dir.exists():
+        shutil.rmtree(viewer_dir)
+    shutil.move(str(stage), str(viewer_dir))
+
+    rc, out = _occ(["app:enable", "viewer"], log_path, timeout=120)
+    if rc != 0:
+        return rc, out
+    rc, out = _occ(["app:list", "--enabled"], log_path, timeout=120)
+    if rc != 0:
+        return rc, out
+    if not re.search(r"^\s*-\s*viewer:", out, re.M):
+        return 1, "viewer still not enabled after refresh\n"
+    log_write(log_path, f"viewer refreshed to {version}\n")
+    try:
+        archive.unlink()  # ~250 MB per refresh
+    except OSError:
+        pass
+    return 0, out
 
 
 def run_nextcloud_update(run_id, tag):

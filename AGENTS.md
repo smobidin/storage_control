@@ -56,6 +56,7 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 - After checkout, Nextcloud needs `git submodule update --init --recursive`. If this is skipped, `3rdparty` stays on the old commit and `occ upgrade` can fail with missing paths / Symfony errors.
 - `occ upgrade` may exit 1 due to stale optional app references even when status and DB are fine. Verify `php occ status`, especially `versionstring`, `maintenance`, and `needsDbUpgrade`.
 - Preserve snapshots live under `/mnt/backup/backups/preserves` and are tracked in `update_preserve`. They support prepare, restore, delete, and live logs through `/updates/preserve/<id>/{log,api,...}`.
+- `~/immich/src` carries one local patch (`checkDiskUsage`: `frsize` -> `bsize`, Node returns no `frsize` here). It lives on branch `local/patches` there and as `tools/immich/patches/0001-storage-statfs-bsize.patch` in this repo. The update runner does NOT re-apply it, so re-apply after any `git checkout <tag>` and rebuild the server. Identity in that repo is repo-local `storage <storage@nas.local>`; never push that branch upstream (origin is immich-app/immich).
 - Prepare stashes local Git changes before backup, so preserve's file copies may predate the stash. For custom tracked files such as `.htaccess`, recover them from `git show refs/preserve/<id>:...` rather than from the copied file.
 - On failure the runner turns maintenance mode off where possible; verify it manually before retrying.
 
