@@ -3,68 +3,110 @@
 {% block content %}
 <h1>Updates</h1>
 
-<div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;">
-  <div class="card">
-    <h3>Immich</h3>
-    <div class="muted" style="margin-bottom:8px;">Текущая: <strong>{{ immich_current }}</strong><br>Доступная: <strong>{{ immich_latest or immich_current }}</strong>
-      {% if immich_available %}<span class="badge inactive">обновление доступно</span>{% elif not immich_release_error %}<span class="badge active">актуальная</span>{% endif %}
-      {% if immich_release_error %}<div class="muted" style="color:#fca5a5;">Проверка не удалась: {{ immich_release_error }}</div>{% endif %}
+<div class="card">
+  <h3>Системы для обновления</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Система</th>
+        <th>Текущая</th>
+        <th>Доступная</th>
+        <th>Статус</th>
+        <th>Версия для установки</th>
+        <th>Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for meta in [
+        ('Immich', 'immich', immich_current, immich_latest, immich_available, immich_release_error, immich_release_url, immich_tags, immich_migration_steps, immich_changelog, url_for('updates.run_immich'), 'Immich'),
+        ('Nextcloud', 'nextcloud', nextcloud_current, nextcloud_latest, nextcloud_available, nextcloud_release_error, nextcloud_release_url, nextcloud_tags, nextcloud_migration_steps, nextcloud_changelog, url_for('updates.run_nextcloud'), 'Nextcloud'),
+        ('Stalwart', 'stalwart', stalwart_current, stalwart_latest, stalwart_available, stalwart_release_error, stalwart_release_url, stalwart_tags, stalwart_migration_steps, stalwart_changelog, url_for('updates.run_stalwart'), 'Stalwart'),
+      ] %}
+      {% set label, key, cur, latest, available, err, rurl, tags, steps, changelog, actionUrl, human = meta %}
+      <tr>
+        <td><strong>{{ label }}</strong></td>
+        <td>{{ cur }}</td>
+        <td>{{ latest or cur }}</td>
+        <td>
+          {% if available %}<span class="badge inactive">доступно</span>{% elif not err %}<span class="badge active">актуально</span>{% endif %}
+          {% if err %}<div class="muted" style="color:#fca5a5;font-size:11px;">{{ err }}</div>{% endif %}
+        </td>
+        <td>
+          <form method="post" action="{{ actionUrl }}" style="display:flex;gap:6px;align-items:center;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="tag" style="padding:4px;">
+              {% for t in tags %}<option value="{{ t }}" {% if loop.first %}selected{% endif %}>{{ t }}</option>{% endfor %}
+            </select>
+            <button class="btn ok" type="submit" data-confirm="Запустить обновление {{ human }}? Операция может изменить установленную версию.">Run</button>
+          </form>
+        </td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap;">
+          <form method="post" action="{{ url_for('updates.prepare_preserve_route') }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="target" value="{{ key }}">
+            <button class="btn" type="submit" data-confirm="Создать точку восстановления {{ human }} перед обновлением?">Prepare</button>
+          </form>
+          <button class="btn" type="button" onclick="openChangelog('{{ key }}')">Changelog</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const CHANGELOGS = {
+    immich: {{ immich_changelog|tojson }},
+    nextcloud: {{ nextcloud_changelog|tojson }},
+    stalwart: {{ stalwart_changelog|tojson }},
+  };
+  const STEPS = {
+    immich: {{ immich_migration_steps|tojson }},
+    nextcloud: {{ nextcloud_migration_steps|tojson }},
+    stalwart: {{ stalwart_migration_steps|tojson }},
+  };
+  const URLS = {
+    immich: {{ (immich_release_url or '')|tojson }},
+    nextcloud: {{ (nextcloud_release_url or '')|tojson }},
+    stalwart: {{ (stalwart_release_url or '')|tojson }},
+  };
+</script>
+
+<div id="changelogModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;padding:20px;">
+  <div style="max-width:960px;margin:4vh auto;background:var(--panel);border:1px solid #334155;border-radius:10px;padding:16px;max-height:86vh;overflow:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <strong id="changelogTitle">Changelog</strong>
+      <button class="btn" type="button" onclick="closeChangelog()">Close</button>
     </div>
-    <form method="post" action="{{ url_for('updates.run_immich') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <select name="tag" style="width:100%;padding:6px;margin-bottom:8px;">
-        {% for t in immich_tags %}<option value="{{ t }}" {% if loop.first %}selected{% endif %}>{{ t }}</option>{% endfor %}
-      </select>
-      <button class="btn ok" type="submit" data-confirm="Запустить обновление Immich? Операция может изменить установленную версию.">Run update</button>
-    </form>
-    <form method="post" action="{{ url_for('updates.prepare_preserve_route') }}" style="margin-top:8px;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="target" value="immich">
-      <button class="btn" type="submit" data-confirm="Создать точку восстановления Immich перед обновлением?">Prepare to update</button>
-    </form>
-    {% if immich_available %}
-    <details style="margin-top:10px;" open>
-      <summary class="muted" style="cursor:pointer;">Changelog {{ immich_latest }}</summary>
-      {% if immich_release_url %}<div style="margin:6px 0;"><a href="{{ immich_release_url }}" target="_blank">Страница релиза</a></div>{% endif %}
-      <pre style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto;">{{ immich_changelog }}</pre>
-      <h4 style="margin-top:8px;">Ключевые шаги миграции</h4>
-      <ul>
-      {% for step in immich_migration_steps %}<li>{{ step }}</li>{% else %}<li class="muted">Явных шагов миграции в changelog не найдено.</li>{% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-  </div>
-  <div class="card">
-    <h3>Nextcloud</h3>
-    <div class="muted" style="margin-bottom:8px;">Текущая: <strong>{{ nextcloud_current }}</strong><br>Доступная: <strong>{{ nextcloud_latest or nextcloud_current }}</strong>
-      {% if nextcloud_available %}<span class="badge inactive">обновление доступно</span>{% elif not nextcloud_release_error %}<span class="badge active">актуальная</span>{% endif %}
-      {% if nextcloud_release_error %}<div class="muted" style="color:#fca5a5;">Проверка не удалась: {{ nextcloud_release_error }}</div>{% endif %}
-    </div>
-    <form method="post" action="{{ url_for('updates.run_nextcloud') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <select name="tag" style="width:100%;padding:6px;margin-bottom:8px;">
-        {% for t in nextcloud_tags %}<option value="{{ t }}" {% if loop.first %}selected{% endif %}>{{ t }}</option>{% endfor %}
-      </select>
-      <button class="btn ok" type="submit" data-confirm="Запустить обновление Nextcloud? Операция может изменить установленную версию.">Run update</button>
-    </form>
-    <form method="post" action="{{ url_for('updates.prepare_preserve_route') }}" style="margin-top:8px;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="target" value="nextcloud">
-      <button class="btn" type="submit" data-confirm="Создать точку восстановления Nextcloud перед обновлением?">Prepare to update</button>
-    </form>
-    {% if nextcloud_available %}
-    <details style="margin-top:10px;" open>
-      <summary class="muted" style="cursor:pointer;">Changelog {{ nextcloud_latest }}</summary>
-      {% if nextcloud_release_url %}<div style="margin:6px 0;"><a href="{{ nextcloud_release_url }}" target="_blank">Страница релиза</a></div>{% endif %}
-      <pre style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto;">{{ nextcloud_changelog }}</pre>
-      <h4 style="margin-top:8px;">Ключевые шаги миграции</h4>
-      <ul>
-      {% for step in nextcloud_migration_steps %}<li>{{ step }}</li>{% else %}<li class="muted">Явных шагов миграции в changelog не найдено. Проверьте официальный ченжлог Nextcloud и заметки к релизу.</li>{% endfor %}
-      </ul>
-    </details>
-    {% endif %}
+    <div id="changelogUrl" style="margin-bottom:8px;"></div>
+    <pre id="changelogBody" style="white-space:pre-wrap;font-size:12px;max-height:56vh;overflow:auto;"></pre>
+    <h4 style="margin-top:8px;">Ключевые шаги миграции</h4>
+    <ul id="changelogSteps"></ul>
   </div>
 </div>
+<script>
+function openChangelog(key) {
+  const title = key.charAt(0).toUpperCase() + key.slice(1);
+  document.getElementById('changelogTitle').textContent = 'Changelog ' + title;
+  document.getElementById('changelogBody').textContent = CHANGELOGS[key] || '';
+  const u = URLS[key];
+  document.getElementById('changelogUrl').innerHTML = u ? '<a href="' + u + '" target="_blank">Страница релиза</a>' : '';
+  const ul = document.getElementById('changelogSteps');
+  ul.innerHTML = '';
+  const steps = STEPS[key] || [];
+  if (steps.length === 0) {
+    const li = document.createElement('li'); li.className='muted'; li.textContent='Явных шагов миграции в changelog не найдено.';
+    ul.appendChild(li);
+  } else {
+    for (const st of steps) { const li = document.createElement('li'); li.textContent = st; ul.appendChild(li); }
+  }
+  document.getElementById('changelogModal').style.display = 'block';
+}
+function closeChangelog() {
+  document.getElementById('changelogModal').style.display = 'none';
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeChangelog(); });
+</script>
 
 <div class="card">
   <h3>Preserves</h3>

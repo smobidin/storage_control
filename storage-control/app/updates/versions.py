@@ -1,9 +1,10 @@
 import subprocess, re, os
 from pathlib import Path
-from ..config import STORAGE_HOME
+from ..config import STORAGE_HOME, STALWART_BIN, STALWART_HOME
 
 IMMICH_SRC = STORAGE_HOME / "immich" / "src"
 NEXTCLOUD_ROOT = STORAGE_HOME / "nextcloud"
+STALWART_BINARY = STALWART_BIN
 
 
 def _run(args, cwd):
@@ -70,6 +71,25 @@ def nextcloud_current_major():
     return int(match.group(1)) if match else 0
 
 
+def stalwart_current():
+    try:
+        import subprocess
+        r = subprocess.run([str(STALWART_BINARY), "--version"], capture_output=True, text=True, timeout=10)
+        out = (r.stdout + r.stderr).strip()
+        if out:
+            ver = out.split()[0]
+            if not ver.startswith("v"):
+                ver = "v" + ver
+            return ver
+    except Exception:
+        pass
+    return "unknown"
+
+
+def stalwart_tags(limit=30):
+    return []
+
+
 def nextcloud_tags(limit=30):
     # avoid blocking the request with network fetch; update run performs fetch
     major = nextcloud_current_major()
@@ -98,6 +118,7 @@ _CACHE_TTL = 300
 _RELEASE_REPOS = {
     "immich": "immich-app/immich",
     "nextcloud": "nextcloud/server",
+    "stalwart": "stalwartlabs/stalwart",
 }
 
 _MIGRATION_KEYWORDS = (
@@ -191,6 +212,11 @@ def immich_release_info(current=None):
 def nextcloud_release_info(current=None):
     target_current = current or nextcloud_current()
     return release_info("nextcloud", target_current)
+
+
+def stalwart_release_info(current=None):
+    target_current = current or stalwart_current()
+    return release_info("stalwart", target_current)
 
 
 def add_candidate(tags, latest):

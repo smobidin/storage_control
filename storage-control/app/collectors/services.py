@@ -12,6 +12,8 @@ SERVICE_CATALOG = [
     {"name": "immich-nightfix.service", "scope": "user", "group": "immich", "order": 30, "critical": False, "desc": "Night thumbnail fix (manual run)"},
     {"name": "immich-nightfix.timer", "scope": "user", "group": "immich", "order": 31, "critical": False, "desc": "Timer 03:00 daily"},
     {"name": "backup-immich-nc.timer", "scope": "user", "group": "backup", "order": 10, "critical": False, "desc": "DB/config backup 04:00"},
+    # Stalwart (user)
+    {"name": "stalwart.service", "scope": "user", "group": "stalwart", "order": 10, "critical": False, "desc": "Stalwart mail server (port 8082)"},
     # Infra (system)
     {"name": "postgresql.service", "scope": "system", "group": "infra", "order": 10, "critical": True, "desc": "PostgreSQL 18"},
     {"name": "redis-server.service", "scope": "system", "group": "infra", "order": 20, "critical": True, "desc": "Redis (Nextcloud sessions)"},

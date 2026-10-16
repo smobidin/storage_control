@@ -7,9 +7,10 @@ from datetime import datetime
 from ..extensions import db
 from ..models import UpdateRun, AuditLog, UpdatePreserve
 from ..config import RUNS_DIR, BACKUP_ROOT
-from ..updates.versions import immich_current, immich_tags, nextcloud_current, nextcloud_tags, add_candidate, immich_release_info, nextcloud_release_info
+from ..updates.versions import immich_current, immich_tags, nextcloud_current, nextcloud_tags, stalwart_current, stalwart_tags, add_candidate, immich_release_info, nextcloud_release_info, stalwart_release_info
 from ..runners.update_immich import run_immich_update
 from ..runners.update_nextcloud import run_nextcloud_update
+from ..runners.update_stalwart import run_stalwart_update
 from ..runners.preserve import prepare_preserve, restore_preserve, delete_preserve
 from ..runners.common import async_call
 
@@ -25,8 +26,11 @@ def index():
     it = immich_tags()
     nc = nextcloud_current()
     nt = nextcloud_tags()
+    sc = stalwart_current()
+    st = stalwart_tags()
     immich_info = immich_release_info(ic)
     nextcloud_info = nextcloud_release_info(nc)
+    stalwart_info = stalwart_release_info(sc)
     return render_template("updates/index.html",
                            immich_current=ic,
                            immich_tags=add_candidate(it, immich_info["latest"]),
@@ -44,6 +48,14 @@ def index():
                            nextcloud_changelog=nextcloud_info["body"],
                            nextcloud_migration_steps=nextcloud_info["migration_steps"],
                            nextcloud_release_error=nextcloud_info["error"],
+                           stalwart_current=sc,
+                           stalwart_tags=add_candidate(st, stalwart_info["latest"]),
+                           stalwart_latest=stalwart_info["latest"],
+                           stalwart_available=stalwart_info["available"],
+                           stalwart_release_url=stalwart_info["url"],
+                           stalwart_changelog=stalwart_info["body"],
+                           stalwart_migration_steps=stalwart_info["migration_steps"],
+                           stalwart_release_error=stalwart_info["error"],
                            preserves=preserves,
                            runs=runs)
 
@@ -80,6 +92,24 @@ def run_nextcloud():
     return redirect(url_for("updates.index"))
 
 
+@bp.route("/stalwart/run", methods=["POST"])
+@login_required
+def run_stalwart():
+    try:
+        validate_csrf(request.form.get("csrf_token"))
+    except ValidationError:
+        flash("csrf", "danger"); return redirect(url_for("updates.index"))
+    tag = request.form.get("tag") or ""
+    if not tag:
+        flash("tag required", "danger"); return redirect(url_for("updates.index"))
+    run = UpdateRun(target="stalwart", to_version=tag, log_path=str(RUNS_DIR / f"update_stalwart_{int(datetime.utcnow().timestamp())}.log"))
+    run.from_version = stalwart_current()
+    db.session.add(run); db.session.commit()
+    async_call(run_stalwart_update, run.id, tag)
+    flash(f"Stalwart update started: {tag}", "info")
+    return redirect(url_for("updates.index"))
+
+
 @bp.route("/api/runs/<int:rid>")
 @login_required
 def run_status(rid):
@@ -105,7 +135,7 @@ def prepare_preserve_route():
     except ValidationError:
         flash("csrf", "danger"); return redirect(url_for("updates.index"))
     target = (request.form.get("target") or "").strip()
-    if target not in ("immich", "nextcloud"):
+    if target not in ("immich", "nextcloud", "stalwart"):
         flash("invalid target", "danger"); return redirect(url_for("updates.index"))
     from datetime import datetime
     preserve = UpdatePreserve(target=target, status="pending",
@@ -182,8 +212,10 @@ def preserve_status(pid):
 def api_availability():
     ic = immich_current()
     nc = nextcloud_current()
+    sc = stalwart_current()
     i = immich_release_info(ic)
     n = nextcloud_release_info(nc)
+    s = stalwart_release_info(sc)
     return jsonify({
         "immich": {
             "current": i.get("current"),
@@ -198,6 +230,13 @@ def api_availability():
             "available": bool(n.get("available")),
             "error": n.get("error"),
             "url": n.get("url"),
+        },
+        "stalwart": {
+            "current": s.get("current"),
+            "latest": s.get("latest"),
+            "available": bool(s.get("available")),
+            "error": s.get("error"),
+            "url": s.get("url"),
         },
     })
 

@@ -5,7 +5,7 @@
 
 <div class="card">
   <h3>Group actions</h3>
-  {% for g in ['immich','nextcloud','infra','backup'] %}
+  {% for g in ['immich','stalwart','nextcloud','infra','backup'] %}
   <form method="post" action="{{ url_for('services.group') }}" style="display:inline-block;margin-right:8px;margin-bottom:8px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="group" value="{{ g }}">

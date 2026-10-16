@@ -8,15 +8,19 @@
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
     <div>Immich: <span id="immich-health" class="badge unknown">checking</span></div>
     <div>Nextcloud: <span id="nextcloud-health" class="badge unknown">checking</span></div>
+    <div>Stalwart: <span id="stalwart-health" class="badge unknown">checking</span></div>
   </div>
   <div class="muted" id="immich-health-meta"></div>
   <div class="muted" id="nextcloud-health-meta"></div>
+  <div class="muted" id="stalwart-health-meta"></div>
   <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:13px;">
     <div>Immich версия: текущая <strong id="immich-version-current">-</strong>, доступная <strong id="immich-version-latest">-</strong> <span id="immich-version-badge" class="badge unknown">checking</span></div>
     <div>Nextcloud версия: текущая <strong id="nextcloud-version-current">-</strong>, доступная <strong id="nextcloud-version-latest">-</strong> <span id="nextcloud-version-badge" class="badge unknown">checking</span></div>
+    <div>Stalwart версия: текущая <strong id="stalwart-version-current">-</strong>, доступная <strong id="stalwart-version-latest">-</strong> <span id="stalwart-version-badge" class="badge unknown">checking</span></div>
   </div>
   <div class="muted" id="immich-version-error" style="color:#fca5a5;"></div>
   <div class="muted" id="nextcloud-version-error" style="color:#fca5a5;"></div>
+  <div class="muted" id="stalwart-version-error" style="color:#fca5a5;"></div>
 </div>
 
 <div class="card">
@@ -184,6 +188,16 @@ async function refreshSvc(){
       ncBadge.textContent = ncOk ? 'OK' : 'DEGRADED';
     }
     if (ncMeta) ncMeta.textContent = ncCore.map(x => x.name + ': ' + x.active).join(' · ');
+
+    const stalwartCore = list.filter(x => x.group === 'stalwart' && x.name.endsWith('.service'));
+    const stalwartOk = stalwartCore.length > 0 && stalwartCore.every(x => x.active === 'active');
+    const stalwartBadge = document.getElementById('stalwart-health');
+    const stalwartMeta = document.getElementById('stalwart-health-meta');
+    if (stalwartBadge) {
+      stalwartBadge.className = 'badge ' + (stalwartOk ? 'active' : 'inactive');
+      stalwartBadge.textContent = stalwartOk ? 'OK' : 'DEGRADED';
+    }
+    if (stalwartMeta) stalwartMeta.textContent = stalwartCore.map(x => x.name + ': ' + x.active).join(' · ');
   } catch(e){ console.error(e); }
 }
 async function refreshSmart(){
@@ -251,6 +265,7 @@ async function refreshUpdates(){
     }
     apply('immich', d.immich);
     apply('nextcloud', d.nextcloud);
+    apply('stalwart', d.stalwart);
   } catch(e){ console.error(e); }
 }
 refresh(); refreshSvc(); refreshSmart(); refreshUpdates();
