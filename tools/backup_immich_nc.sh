@@ -20,7 +20,7 @@ if ! mountpoint -q /mnt/backup; then
     exit 1
 fi
 
-mkdir -p "$DEST/immich" "$DEST/nextcloud" "$DEST/logs"
+mkdir -p "$DEST/immich" "$DEST/nextcloud" "$DEST/stalwart" "$DEST/logs"
 
 # 2. Immich: дамп БД (custom format, сжимается, восстановление pg_restore)
 log "pg_dump immich..."
@@ -56,6 +56,29 @@ tar czf "$DEST/nextcloud/nextcloud_config_$STAMP.tar.gz" \
     -C /home/storage/nextcloud config/config.php \
     2>"$DEST/logs/nextcloud_tar_$STAMP.err" || log "WARN: tar nextcloud вернул не 0"
 
+# 5a. Stalwart: данные (RocksDB) + конфиг/юнит. Останавливаем сервис, чтобы дамп был консистентным.
+log "Бэкап Stalwart..."
+STALWART_WAS_RUNNING=0
+if systemctl --user is-active --quiet stalwart; then
+    STALWART_WAS_RUNNING=1
+    systemctl --user stop stalwart
+fi
+if [ -d /mnt/data/stalwart ]; then
+    if tar czf "$DEST/stalwart/stalwart_data_$STAMP.tar.gz" -C /mnt/data stalwart 2>"$DEST/logs/stalwart_data_$STAMP.err"; then
+        log "OK: $(du -h "$DEST/stalwart/stalwart_data_$STAMP.tar.gz" | cut -f1)"
+    else
+        log "ERROR: tar stalwart data упал, см. logs"
+    fi
+fi
+tar czf "$DEST/stalwart/stalwart_config_$STAMP.tar.gz" \
+    -C /home/storage \
+    .config/systemd/user/stalwart.service \
+    stalwart/etc \
+    2>"$DEST/logs/stalwart_config_$STAMP.err" || log "WARN: tar stalwart config вернул не 0"
+if [ "$STALWART_WAS_RUNNING" = "1" ]; then
+    systemctl --user start stalwart || log "WARN: не удалось поднять stalwart после бэкапа"
+fi
+
 # 6. nginx + SSL конфиги
 log "Копирую nginx конфиги..."
 tar czf "$DEST/nginx_config_$STAMP.tar.gz" \
@@ -81,6 +104,7 @@ tar czf "$DEST/backup_units_$STAMP.tar.gz" \
     backup-immich-nc.timer \
     backup-home-rsync.service \
     backup-home-rsync.timer \
+    stalwart.service \
     2>"$DEST/logs/backup_units_tar_$STAMP.err" || log "WARN: tar backup units вернул не 0"
 
 # 9. Список установленных пакетов
@@ -88,8 +112,8 @@ dpkg --get-selections > "$DEST/pkg_list_$STAMP.txt" 2>/dev/null || true
 
 # 10. Ротация: старше KEEP_DAYS дней — удалить
 log "Ротация: удаляю бэкапы старше $KEEP_DAYS дней..."
-find "$DEST/immich" "$DEST/nextcloud" -name "*.dump" -mtime +$KEEP_DAYS -delete 2>/dev/null
-find "$DEST/immich" "$DEST/nextcloud" -name "*.tar.gz" -mtime +$KEEP_DAYS -delete 2>/dev/null
+find "$DEST/immich" "$DEST/nextcloud" "$DEST/stalwart" -name "*.dump" -mtime +$KEEP_DAYS -delete 2>/dev/null
+find "$DEST/immich" "$DEST/nextcloud" "$DEST/stalwart" -name "*.tar.gz" -mtime +$KEEP_DAYS -delete 2>/dev/null
 find "$DEST" -maxdepth 1 -name "*.tar.gz" -mtime +$KEEP_DAYS -delete 2>/dev/null
 find "$DEST" -maxdepth 1 -name "pkg_list_*.txt" -mtime +$KEEP_DAYS -delete 2>/dev/null
 find "$DEST/logs" -type f -mtime +$KEEP_DAYS -delete 2>/dev/null
