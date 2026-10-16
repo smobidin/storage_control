@@ -67,7 +67,7 @@ def prepare_preserve(preserve_id):
                     raise RuntimeError("immich config backup failed")
                 _copy_safe(IMMICH_ENV, base / ".env")
 
-            else:
+            elif preserve.target == "nextcloud":
                 repo = NEXTCLOUD_ROOT
                 git_before = _run_git_before(repo, log_path)
                 stash_hash = _stash(repo, preserve.id, log_path)
@@ -84,14 +84,37 @@ def prepare_preserve(preserve_id):
                 _copy_safe(NEXTCLOUD_ROOT / "config" / "config.php", base / "config.php")
                 _copy_safe(NEXTCLOUD_ROOT / ".htaccess", base / ".htaccess")
 
+            else:
+                from ..updates.versions import stalwart_current
+                git_before = stalwart_current()
+                stash_hash = None
+                rc, _ = _step(steps, preserve, "stop_service", lambda: run_cmd(
+                    ["systemctl", "--user", "stop", "stalwart.service"], log_path=log_path))
+                rc, _ = _step(steps, preserve, "backup_data", lambda: run_cmd(
+                    ["tar", "czf", str(base / "stalwart_data.tar.gz"), "-C", "/mnt/data", "stalwart"],
+                    log_path=log_path, timeout=3600))
+                if rc != 0:
+                    raise RuntimeError("stalwart data backup failed")
+                rc, _ = _step(steps, preserve, "backup_config", lambda: run_cmd(
+                    ["tar", "czf", str(base / "stalwart_config.tar.gz"),
+                     "-C", str(STORAGE_HOME), ".config/systemd/user/stalwart.service", "stalwart/etc"],
+                    log_path=log_path))
+                if rc != 0:
+                    raise RuntimeError("stalwart config backup failed")
+                run_cmd(["systemctl", "--user", "start", "stalwart.service"], log_path=log_path)
+
             preserve.from_version = git_before
             preserve.git_before = git_before
             preserve.git_stash = stash_hash
-            preserve.db_dump = str(base / ("%s_db.dump" % preserve.target))
             if preserve.target == "immich":
+                preserve.db_dump = str(base / "immich_db.dump")
                 preserve.config_path = str(base / ".env")
-            else:
+            elif preserve.target == "nextcloud":
+                preserve.db_dump = str(base / "nextcloud_db.dump")
                 preserve.config_path = str(base / "config.php")
+            else:
+                preserve.db_dump = str(base / "stalwart_data.tar.gz")
+                preserve.config_path = str(base / "stalwart_config.tar.gz")
             preserve.extra_files = json.dumps({
                 "config_archive": str(base / ("%s_config.tar.gz" % preserve.target)),
                 "htaccess": str(base / ".htaccess") if preserve.target == "nextcloud" else None,
@@ -197,6 +220,14 @@ def restore_preserve(preserve_id):
                     raise RuntimeError("cannot disable maintenance mode")
                 _step(steps, preserve, "restart_services", lambda: run_cmd(
                     ["sudo", "systemctl", "restart", "php8.5-fpm", "nginx"], log_path=log_path))
+            elif preserve.target == "stalwart":
+                run_cmd(["systemctl", "--user", "stop", "stalwart.service"], log_path=log_path)
+                rc, _ = _step(steps, preserve, "restore_data", lambda: run_cmd(
+                    ["tar", "xzf", str(base / "stalwart_data.tar.gz"), "-C", "/mnt/data"],
+                    log_path=log_path, timeout=3600))
+                if rc != 0:
+                    raise RuntimeError("stalwart data restore failed")
+                run_cmd(["systemctl", "--user", "start", "stalwart.service"], log_path=log_path)
             else:
                 repo = IMMICH_SRC
                 run_cmd(["systemctl", "--user", "stop", "immich-ml.service", "immich-server.service"], log_path=log_path)
