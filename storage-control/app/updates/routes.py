@@ -3,6 +3,7 @@ from flask_login import login_required
 from flask_wtf.csrf import validate_csrf
 from wtforms.validators import ValidationError
 from datetime import datetime
+import threading
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog, UpdatePreserve
@@ -15,6 +16,36 @@ from ..runners.preserve import prepare_preserve, restore_preserve, delete_preser
 from ..runners.common import async_call
 
 bp = Blueprint("updates", __name__, template_folder="../../templates", url_prefix="/updates")
+
+# Guards the check-and-create of update runs. The app is a single gunicorn
+# worker with threaded request handling, so a process-wide lock is enough to
+# keep a double-clicked "run" button from launching two concurrent runners
+# for the same target (they would race on service stop / binary replace /
+# service start and can leave the service executing a deleted binary).
+_UPDATE_LAUNCH_LOCK = threading.Lock()
+
+
+def _start_update_run(target, tag, runner, current_fn):
+    """Create an UpdateRun and launch its worker thread.
+
+    Returns the run, or None (with a flash) when an update for this target
+    is already running."""
+    if not tag:
+        flash("tag required", "danger")
+        return None
+    with _UPDATE_LAUNCH_LOCK:
+        busy = UpdateRun.query.filter_by(target=target, status="running").first()
+        if busy:
+            flash("%s update run #%d is already running" % (target.title(), busy.id), "danger")
+            return None
+        run = UpdateRun(target=target, to_version=tag,
+                        log_path=str(RUNS_DIR / f"update_{target}_{int(datetime.utcnow().timestamp())}.log"))
+        run.from_version = current_fn()
+        db.session.add(run)
+        db.session.commit()
+    async_call(runner, run.id, tag)
+    flash("%s update started: %s" % (target.title(), tag), "info")
+    return run
 
 
 @bp.route("/")
@@ -67,12 +98,7 @@ def run_immich():
         validate_csrf(request.form.get("csrf_token"))
     except ValidationError:
         flash("csrf", "danger"); return redirect(url_for("updates.index"))
-    tag = request.form.get("tag") or ""
-    run = UpdateRun(target="immich", to_version=tag, log_path=str(RUNS_DIR / f"update_immich_{int(datetime.utcnow().timestamp())}.log"))
-    run.from_version = immich_current()
-    db.session.add(run); db.session.commit()
-    async_call(run_immich_update, run.id, tag)
-    flash(f"Immich update started: {tag}", "info")
+    _start_update_run("immich", request.form.get("tag") or "", run_immich_update, immich_current)
     return redirect(url_for("updates.index"))
 
 
@@ -83,12 +109,7 @@ def run_nextcloud():
         validate_csrf(request.form.get("csrf_token"))
     except ValidationError:
         flash("csrf", "danger"); return redirect(url_for("updates.index"))
-    tag = request.form.get("tag") or ""
-    run = UpdateRun(target="nextcloud", to_version=tag, log_path=str(RUNS_DIR / f"update_nextcloud_{int(datetime.utcnow().timestamp())}.log"))
-    run.from_version = nextcloud_current()
-    db.session.add(run); db.session.commit()
-    async_call(run_nextcloud_update, run.id, tag)
-    flash(f"Nextcloud update started: {tag}", "info")
+    _start_update_run("nextcloud", request.form.get("tag") or "", run_nextcloud_update, nextcloud_current)
     return redirect(url_for("updates.index"))
 
 
@@ -99,14 +120,7 @@ def run_stalwart():
         validate_csrf(request.form.get("csrf_token"))
     except ValidationError:
         flash("csrf", "danger"); return redirect(url_for("updates.index"))
-    tag = request.form.get("tag") or ""
-    if not tag:
-        flash("tag required", "danger"); return redirect(url_for("updates.index"))
-    run = UpdateRun(target="stalwart", to_version=tag, log_path=str(RUNS_DIR / f"update_stalwart_{int(datetime.utcnow().timestamp())}.log"))
-    run.from_version = stalwart_current()
-    db.session.add(run); db.session.commit()
-    async_call(run_stalwart_update, run.id, tag)
-    flash(f"Stalwart update started: {tag}", "info")
+    _start_update_run("stalwart", request.form.get("tag") or "", run_stalwart_update, stalwart_current)
     return redirect(url_for("updates.index"))
 
 

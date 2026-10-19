@@ -1,8 +1,8 @@
 import json, os, time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from ..config import BACKUP_ROOT, STORAGE_HOME
+from ..config import BACKUP_ROOT, BACKUP_SKIP_DIRS, STORAGE_HOME
 from ..extensions import db
 from ..models import BackupTask, BackupRun
 from .common import run_cmd, log_write
@@ -96,8 +96,12 @@ def run_retention_cleanup():
             if not task.retention_days:
                 continue
             cutoff = datetime.now() - timedelta(days=task.retention_days)
-            # scan backup root best-effort: delete files older than cutoff with known extensions
-            for root, _, fs in os.walk(BACKUP_ROOT):
+            # Scan backup root best-effort: delete files older than cutoff with known
+            # extensions. Machine-managed trees (the home-storage rsync mirror and
+            # preserve snapshots) are pruned: retention only owns the artifacts this
+            # app writes, and the mirror holds its own .txt/.tar.gz files.
+            for root, dirs, fs in os.walk(BACKUP_ROOT):
+                dirs[:] = [d for d in dirs if d not in BACKUP_SKIP_DIRS]
                 for f in fs:
                     if not f.endswith((".dump", ".tar.gz", ".txt")):
                         continue

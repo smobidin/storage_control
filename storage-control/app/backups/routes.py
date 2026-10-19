@@ -7,7 +7,7 @@ from wtforms.validators import ValidationError
 
 from ..extensions import db
 from ..models import BackupTask, BackupRun, AuditLog
-from ..config import BACKUP_ROOT
+from ..config import BACKUP_ROOT, BACKUP_SKIP_DIRS
 from ..runners.backup_task import execute_backup_task
 from ..runners.common import async_call
 from ..scheduler import sync_backup_jobs
@@ -15,21 +15,36 @@ from ..scheduler import sync_backup_jobs
 bp = Blueprint("backups", __name__, template_folder="../../templates", url_prefix="/backups")
 
 
+# Root files plus one level of per-app subdirectories (immich/, nextcloud/, stalwart/, logs/).
+# Machine-managed trees listed in BACKUP_SKIP_DIRS are never walked: enumerating the
+# home-storage rsync mirror used to produce a ~360 MB HTML response and the section
+# would not open in a browser.
+MAX_DEPTH = 2
+# Safety net in case a subdirectory still grows unexpectedly.
+MAX_FILES = 500
+
+
 def _files():
     out = []
     root = Path(BACKUP_ROOT)
     if not root.exists():
         return out
-    for p in root.rglob("*"):
-        if p.is_file():
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = Path(dirpath).relative_to(root)
+        if len(rel_dir.parts) >= MAX_DEPTH:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [d for d in dirnames if d not in BACKUP_SKIP_DIRS]
+        for name in filenames:
+            p = Path(dirpath) / name
             try:
                 st = p.stat()
-                out.append({"path": str(p), "rel": str(p.relative_to(root)), "name": p.name,
-                            "size": st.st_size, "mtime": st.st_mtime})
-            except Exception:
-                pass
+            except OSError:
+                continue
+            out.append({"path": str(p), "rel": str(p.relative_to(root)), "name": name,
+                        "size": st.st_size, "mtime": st.st_mtime})
     out.sort(key=lambda x: x["mtime"], reverse=True)
-    return out
+    return out[:MAX_FILES]
 
 
 def safe_path(rel):

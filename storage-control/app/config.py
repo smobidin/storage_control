@@ -14,6 +14,12 @@ STALWART_HOME = STORAGE_HOME / "stalwart"
 STALWART_BIN = STALWART_HOME / "bin" / "stalwart"
 STALWART_DATA = Path("/mnt/data/stalwart")
 BACKUP_ROOT = Path("/mnt/backup/backups")
+# Directories under BACKUP_ROOT that hold machine-managed trees and must never be
+# scanned file-by-file: `home-storage` is the hourly rsync mirror of $STORAGE_HOME
+# (hundreds of thousands of files), `preserves` snapshots have their own UI under
+# /updates/preserve. Keeps the Backups file listing bounded and stops the retention
+# cleanup from walking (and deleting) files this app does not own.
+BACKUP_SKIP_DIRS = {"home-storage", "preserves"}
 DATA_DIR = Path(os.environ.get("STORAGE_CONTROL_DATA", str(STORAGE_HOME / ".local" / "share" / "storage-control")))
 RUNS_DIR = DATA_DIR / "runs"
 

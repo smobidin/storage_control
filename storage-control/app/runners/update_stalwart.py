@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-import json, os, shutil, urllib.request, tarfile, time
+import json, os, shutil, tempfile, urllib.request, tarfile, time
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
@@ -36,12 +36,19 @@ def run_stalwart_update(run_id, tag):
             run.steps = json.dumps(steps)
             db.session.commit()
 
+        stage_root = None
+
+        def cleanup_stage():
+            if stage_root:
+                shutil.rmtree(stage_root, ignore_errors=True)
+
         def fail(exc):
             run.status = "failed"
             run.error if hasattr(run, "error") else None
             run.finished_at = datetime.utcnow()
             db.session.commit()
             log_write(log_path, "\nFAILED: %s\n" % exc)
+            cleanup_stage()
             # ensure service back up where possible
             run_cmd(["systemctl", "--user", "start", "stalwart.service"], log_path=str(log_path))
 
@@ -51,16 +58,19 @@ def run_stalwart_update(run_id, tag):
             rc, _ = run_cmd(["systemctl", "--user", "stop", "stalwart.service"], log_path=str(log_path))
             record("stop_service", rc)
 
-            # backup current binary
+            # backup current binary (a real pre-update backup artifact, lives in
+            # BACKUP_ROOT like the immich/nextcloud pre-update dumps)
             base = BACKUP_ROOT / "stalwart" / str(run_id)
             base.mkdir(parents=True, exist_ok=True)
             if STALWART_BIN.exists():
                 shutil.copy2(STALWART_BIN, base / "stalwart.bak")
             record("backup_binary", 0)
 
-            # download
+            # download into /tmp: the update staging area must not touch
+            # /mnt/data (service data only) or BACKUP_ROOT (backups only)
+            stage_root = Path(tempfile.mkdtemp(prefix="stalwart-update-%d_" % run_id))
             url = "https://github.com/stalwartlabs/stalwart/releases/download/%s/stalwart-x86_64-unknown-linux-gnu.tar.gz" % tag
-            tar_path = base / "stalwart.tar.gz"
+            tar_path = stage_root / "stalwart.tar.gz"
             log_write(log_path, "Downloading %s\n" % url)
             try:
                 urllib.request.urlretrieve(url, tar_path)
@@ -70,8 +80,7 @@ def run_stalwart_update(run_id, tag):
                 raise RuntimeError("download failed: %s" % e)
 
             # extract
-            tmp = base / "extract"
-            tmp.mkdir(exist_ok=True)
+            tmp = stage_root / "extract"
             with tarfile.open(tar_path, "r:gz") as tf:
                 tf.extractall(tmp)
             # find binary
@@ -82,8 +91,15 @@ def run_stalwart_update(run_id, tag):
             new_bin = candidates[0]
             record("extract", 0)
 
-            # replace
-            os.replace(new_bin, STALWART_BIN)
+            # replace (cross-device safe: copy onto the target filesystem first,
+            # os.replace cannot rename across filesystems)
+            stage = STALWART_BIN.with_name(STALWART_BIN.name + ".new")
+            shutil.copy2(new_bin, stage)
+            try:
+                os.chmod(stage, 0o755)
+            except Exception:
+                pass
+            os.replace(stage, STALWART_BIN)
             try:
                 os.chmod(STALWART_BIN, 0o755)
             except Exception:
@@ -108,6 +124,7 @@ def run_stalwart_update(run_id, tag):
             db.session.commit()
             db.session.add(AuditLog(actor="admin", action="update.run", obj="stalwart", payload="%s -> %s" % (run.from_version, tag)))
             db.session.commit()
+            cleanup_stage()
             log_write(log_path, "\nUPDATE OK\n")
         except Exception as exc:
             fail(exc)

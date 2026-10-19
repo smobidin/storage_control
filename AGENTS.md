@@ -26,12 +26,14 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 - User service is installed by `tools/install.sh`; it binds `0.0.0.0:8765` by default (all interfaces), so use firewall/nginx or install with `--bind 127.0.0.1:8765`.
 - No automated tests. After edits: `.venv/bin/python -m compileall -q .`, then `curl -s http://127.0.0.1:8765/login`.
 - Keep exactly one Gunicorn worker; long update/preserve jobs run in daemon threads and use subprocess.
+- Update runs are serialized per target by `_start_update_run` (`updates/routes.py`, threading lock + a `running`-status check in the DB). A worker crash can leave an orphan `running` row that blocks that target's next update — reset its status in `update_run` manually before retrying. `systemctl start` on an already-active unit is a no-op return 0, so a runner's "start_service rc 0" does not prove the new binary was picked up; check `readlink /proc/$(systemctl --user show -p MainPID --value <svc>)/exe` when in doubt.
 
 ## Environment and data
 
 - `SECRET_KEY`, `ADMIN_PASSWORD`, optional `ADMIN_USERNAME`, `STORAGE_HOME`, `STORAGE_CONTROL_DATA`, `ENABLE_SCHEDULER`.
 - Data/logs/runs are under `$STORAGE_CONTROL_DATA` (default `/home/storage/.local/share/storage-control`).
-- Backups are under `/mnt/backup/backups`.
+- Disk discipline: `/mnt/backup/backups` holds backups only (pre-update dumps, preserves, rsync mirror); `/mnt/data` holds service data only (media, Immich, Stalwart RocksDB); all transient work (downloads, extraction staging) belongs in `/tmp`.
+- `/tmp` is tmpfs (~7 GB). Enough for update tarballs/extracts (~150 MB), but don't stage GBs there.
 
 ## Dashboard and health gotchas
 
@@ -61,10 +63,18 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 - Prepare stashes local Git changes before backup, so preserve's file copies may predate the stash. For custom tracked files such as `.htaccess`, recover them from `git show refs/preserve/<id>:...` rather than from the copied file.
 - On failure the runner turns maintenance mode off where possible; verify it manually before retrying.
 
+## Stalwart
+
+- Runs as a **user** systemd unit (`systemctl --user stop/start/status stalwart.service`, unit at `/home/storage/.config/systemd/user/stalwart.service`) — system-wide `systemctl` won't see it, and its controls need no sudo.
+- Install: `/home/storage/stalwart/{bin/stalwart,etc/config.json}`; RocksDB data at `/mnt/data/stalwart` (the unit pins `RequiresMountsFor=/mnt/data/stalwart` and `StartLimitIntervalSec=0` so it survives a not-yet-mounted data disk).
+- `etc/config.json` contains only the store pointer (`{"@type":"RocksDb","path":"/mnt/data/stalwart/"}`). Admin UI answers at `http://127.0.0.1:8082/admin/` — that is the runner smoke target (`runners/update_stalwart.py::_smoke`). With `config.json` missing, Stalwart boots in bootstrap mode with WebUI on `:8080`. Version check: `~/stalwart/bin/stalwart --version`.
+- Update runner staging: downloads/extracts only into `/tmp/stalwart-update-<run_id>_*` (auto-cleaned on success **and** failure); the pre-update binary goes to `/mnt/backup/backups/stalwart/<run_id>/stalwart.bak` — a real backup artifact, like the immich/nextcloud pre-update dumps.
+- Cross-filesystem gotcha: `/tmp` is tmpfs, so `os.replace(tmpfile, /home/...)` fails with `[Errno 18] Cross-device link`. The runner works around it by `copy2`-ing to `stalwart.new` next to the target and `os.replace`-ing within `/home`'s filesystem. Never stage runner work on `/mnt/data` or `/mnt/backup` (disk discipline above).
+
 ## Host backups
 
 - `backup-immich-nc.timer` (04:00) runs `tools/backup_immich_nc.sh`: immich/nextcloud DB dumps plus stalwart RocksDB data/config, immich `.env`, nextcloud `config.php`, nginx/letsencrypt and `postgresql.conf`/`pg_hba.conf` (via sudo) to `/mnt/backup/backups`, 14-day rotation. The script lives in this repo; the stale copy that wrote to the non-existent `/mnt/recovery` is gone.
-- `backup-home-rsync.timer` (05:00) runs `tools/backup_home_rsync.sh`: an rsync mirror of `/home/storage` to `/mnt/backup/backups/home-storage/{current,deleted,logs}`, excluding `/.cache/`. The system disk `/dev/sde2` holds `/` and `/home/storage` and is failing, so this is the main protection for the home directory. Media lives on `/mnt/data` (RAID) and is not copied.
+- `backup-home-rsync.timer` (05:00) runs `tools/backup_home_rsync.sh`: an rsync mirror of `/home/storage` to `/mnt/backup/backups/home-storage/{current,deleted,logs}`, excluding `/.cache/`. `/` and `/home/storage` both sit on the system disk `/dev/sdd2` (298 GB); the previously failing `/dev/sde` is no longer present in `lsblk`, but the mirror is still the main protection for the home directory. Media lives on `/mnt/data` (RAID1 `md0` from `sda`+`sdb`) and is not copied.
 
 - `Runner app/runners/smart_monitor.py` performs the nightly SMART check; it stores `SmartDiskState` and active `SmartAlert` records. Startup also runs one baseline check asynchronously.
 - SMART discovery is dynamic from `/sys/block`; loops, RAID, RAM, empty, and virtual block devices are excluded.
@@ -83,7 +93,7 @@ Repo is a NAS monitoring/management console for Immich + Nextcloud. Docs at repo
 
 ## System-service access
 
-- Whitelisted operations are in `scripts/sudoers-storage-control`.
+- Whitelisted operations are in `storage-control/scripts/sudoers-storage-control`.
 - Collector endpoints depend on `sudo mdadm --detail /dev/md0`, `sudo smartctl -a` for physical block devices, and system service controls.
 - Update/install flows assume systemd units such as `nginx`, `php8.5-fpm`, `postgresql`, `redis-server`, `immich-server`, and `immich-ml`.
 
