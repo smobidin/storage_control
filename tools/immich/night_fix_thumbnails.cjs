@@ -257,7 +257,7 @@ async function main() {
   if (assets.length === 0) {
     console.log('nothing to fix');
     await client.end();
-    return;
+    process.exit(0);
   }
 
   console.log(`assets to fix: ${assets.length}`);
@@ -268,7 +268,10 @@ async function main() {
   console.log(`done: ${ok} fixed, ${fail} failed, ${left[0].n} still without thumbhash`);
   await client.end();
 
-  if (fail > 0 || left[0].n > 0) process.exit(1);
+  if (fail > 0 || left[0].n > 0) {
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
