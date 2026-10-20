@@ -55,12 +55,75 @@ def safe_path(rel):
     return p
 
 
+def _group_tasks(tasks):
+    kind_groups = {
+        'immich': ['immich_db', 'immich_config'],
+        'nextcloud': ['nextcloud_db', 'nextcloud_config'],
+        'stalwart': ['stalwart_db', 'stalwart_config'],
+        'other': ['all', 'custom']
+    }
+    grouped = {'immich': [], 'nextcloud': [], 'stalwart': [], 'other': []}
+    for t in tasks:
+        group = 'other'
+        for g, kinds in kind_groups.items():
+            if t.kind in kinds:
+                group = g
+                break
+        grouped[group].append(t)
+    return grouped
+
+
+def _group_runs(runs, tasks):
+    kind_groups = {
+        'immich': ['immich_db', 'immich_config'],
+        'nextcloud': ['nextcloud_db', 'nextcloud_config'],
+        'stalwart': ['stalwart_db', 'stalwart_config'],
+        'other': ['all', 'custom']
+    }
+    task_kind = {t.id: t.kind for t in tasks}
+    grouped = {'immich': [], 'nextcloud': [], 'stalwart': [], 'other': []}
+    for r in runs:
+        kind = task_kind.get(r.task_id, 'custom')
+        group = 'other'
+        for g, kinds in kind_groups.items():
+            if kind in kinds:
+                group = g
+                break
+        grouped[group].append(r)
+    return grouped
+
+
+def _group_files(files):
+    grouped = {'immich': [], 'nextcloud': [], 'stalwart': [], 'logs': [], 'other': []}
+    for f in files:
+        if f['rel'].startswith('immich/'):
+            grouped['immich'].append(f)
+        elif f['rel'].startswith('nextcloud/'):
+            grouped['nextcloud'].append(f)
+        elif f['rel'].startswith('stalwart/'):
+            grouped['stalwart'].append(f)
+        elif f['rel'].startswith('logs/'):
+            grouped['logs'].append(f)
+        else:
+            grouped['other'].append(f)
+    return grouped
+
+
 @bp.route("/")
 @login_required
 def index():
     tasks = BackupTask.query.order_by(BackupTask.id).all()
     runs = BackupRun.query.order_by(BackupRun.started_at.desc()).limit(50).all()
-    return render_template("backups/index.html", tasks=tasks, runs=runs, files=_files())
+    files = _files()
+    return render_template(
+        "backups/index.html",
+        tasks=tasks,
+        runs=runs,
+        files=files,
+        tasks_by_group=_group_tasks(tasks),
+        runs_by_group=_group_runs(runs, tasks),
+        files_by_group=_group_files(files),
+    )
 
 
 @bp.route("/tasks", methods=["POST"])
