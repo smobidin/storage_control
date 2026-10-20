@@ -41,6 +41,7 @@
           <th style="width:30%;">Unit</th>
           <th>Scope</th>
           <th style="width:12%;">Status</th>
+          <th style="width:15%;">Last Run</th>
           <th style="width:10%;">Enabled</th>
           <th style="width:20%;">Actions</th>
         </tr>
@@ -53,7 +54,31 @@
             {% if s.desc %}<div class="muted">{{ s.desc }}</div>{% endif %}
           </td>
           <td>{{ s.scope }}</td>
-          <td><span class="badge {{ 'active' if s.active=='active' else ('inactive' if s.active=='inactive' else 'unknown') }}">{{ s.active }}</span></td>
+          <td>
+            {% set disp = s.display_status or s.active %}
+            {% set badge_class = 'unknown' %}
+            {% if disp == 'active' %}{% set badge_class = 'active' %}
+            {% elif disp == 'inactive' %}{% set badge_class = 'inactive' %}
+            {% elif disp == 'success' %}{% set badge_class = 'active' %}
+            {% elif disp == 'failed' %}{% set badge_class = 'inactive' %}
+            {% elif disp == 'never-run' %}{% set badge_class = 'unknown' %}
+            {% endif %}
+            <span class="badge {{ badge_class }}">{{ disp }}</span>
+            {% if s.unit_type == 'oneshot' and s.active_exit %}
+              <span class="muted" style="font-size:11px;margin-left:4px;">(oneshot)</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if s.last_run %}
+              <div class="muted" style="font-size:12px;">{{ s.last_run[:19].replace('T', ' ') }}</div>
+            {% elif s.active_since %}
+              <div class="muted" style="font-size:12px;">{{ s.active_since[:19].replace('T', ' ') }}</div>
+            {% elif s.next_run %}
+              <div class="muted" style="font-size:12px;">next: {{ s.next_run[:19].replace('T', ' ') }}</div>
+            {% else %}
+              <div class="muted" style="font-size:12px;">—</div>
+            {% endif %}
+          </td>
           <td>{{ s.enabled }}</td>
           <td>
             <a class="btn" target="_blank" href="{{ url_for('services.logs', unit=s.name, scope=s.scope) }}" style="font-size:12px;padding:4px 8px;">Logs</a>
