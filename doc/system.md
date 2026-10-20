@@ -429,6 +429,39 @@ curl -k https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=/hosti
 # Должен вернуть WOPI discovery XML
 ```
 
+### Обновление Collabora Online (AppImage)
+
+Collabora Online обновляется отдельно от Nextcloud. AppImage распространяется через Nextcloud App Store.
+
+**Источник обновления:**
+- Nextcloud App Store: https://apps.nextcloud.com/apps/richdocumentscode/releases?platform=26
+- Прямая ссылка на tar.gz: `https://github.com/CollaboraOnline/richdocumentscode/releases/download/26.4.402/richdocumentscode.tar.gz`
+
+**Процесс обновления:**
+```bash
+# 1. Остановить сервис
+sudo systemctl stop collabora-online.service
+
+# 2. Скачать и распаковать новый AppImage
+wget https://github.com/CollaboraOnline/richdocumentscode/releases/download/26.4.402/richdocumentscode.tar.gz
+tar -xzf richdocumentscode.tar.gz
+
+# 3. Заменить AppImage
+sudo cp richdocumentscode/collabora/Collabora_Online.AppImage /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
+sudo chown cool:cool /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
+sudo chmod +x /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
+
+# 4. Запустить сервис
+sudo systemctl restart collabora-online.service
+
+# 5. Проверить
+sudo systemctl status collabora-online.service
+curl -k https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=/hosting/discovery
+```
+
+**Версия совместимости:**
+- Nextcloud 26/27 (richdocuments 12.x) → Collabora 26.04.x
+
 ---
 
 *Документация актуальна на: $(date +%F)*

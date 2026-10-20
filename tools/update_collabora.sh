@@ -32,27 +32,29 @@ show_manual_instructions() {
 MANUAL COLLABORA ONLINE UPDATE PROCESS
 ========================================
 
-Because the official Collabora website (www.collaboraoffice.com) is 
-protected by Cloudflare and blocks automated downloads, you must 
-download the AppImage manually:
+The official AppImage is distributed via Nextcloud App Store:
+https://apps.nextcloud.com/apps/richdocumentscode/releases?platform=26
 
-STEP 1: Download the AppImage
-   - Visit: https://www.collaboraoffice.com/code/
-   - Click the "Download AppImage" link
-   - Or check: https://www.collaboraoffice.com/downloads/
-   - Save as: Collabora_Online.AppImage
+This provides a tar.gz package containing the AppImage at:
+richdocumentscode/collabora/Collabora_Online.AppImage
 
-STEP 2: Place the new AppImage
-   sudo cp /path/to/downloaded/Collabora_Online.AppImage /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
+STEP 1: Download the tar.gz from Nextcloud App Store
+   - Visit: https://apps.nextcloud.com/apps/richdocumentscode/releases?platform=26
+   - Download the latest richdocumentscode.tar.gz
+   - Or use direct GitHub release:
+     https://github.com/CollaboraOnline/richdocumentscode/releases/download/26.4.402/richdocumentscode.tar.gz
 
-STEP 3: Fix permissions
+STEP 2: Extract and replace AppImage
+   tar -xzf richdocumentscode.tar.gz
+   sudo systemctl stop collabora-online.service
+   sudo cp richdocumentscode/collabora/Collabora_Online.AppImage /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
    sudo chown cool:cool /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
    sudo chmod +x /home/storage/nextcloud/apps/richdocumentscode/collabora/Collabora_Online.AppImage
 
-STEP 4: Restart service
+STEP 3: Restart service
    sudo systemctl restart collabora-online.service
 
-STEP 5: Verify
+STEP 4: Verify
    sudo systemctl status collabora-online.service
    # Check logs for version:
    sudo journalctl -u collabora-online.service --since "2 minutes ago" | grep -iE 'version|product'
