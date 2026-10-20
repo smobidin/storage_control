@@ -99,12 +99,12 @@ def _build_core_plugin(node_env, log_path):
     (the server/Dockerfile layout); without it the server logs
     "Failed to import plugin ..." on every boot and core templates are missing.
     """
-    rc, _ = run_cmd(
+    rc, out = run_cmd(
         ["pnpm", "--filter", "@immich/sdk", "--filter", "@immich/plugin-sdk",
          "--filter", "@immich/plugin-core", "build"],
         cwd=IMMICH_SRC, env=node_env, log_path=log_path, timeout=1800)
     if rc != 0:
-        return rc
+        return rc, out
 
     src = IMMICH_SRC / "packages" / "plugin-core"
     dst = IMMICH_SRC.parent / "build" / "plugins" / "immich-plugin-core"
@@ -113,7 +113,7 @@ def _build_core_plugin(node_env, log_path):
     shutil.rmtree(dst / "dist", ignore_errors=True)
     shutil.copytree(src / "dist", dst / "dist")
     log_write(log_path, "installed core plugin to %s\n" % dst)
-    return 0
+    return 0, ""
 
 
 def _apply_local_patches(patches_dir, log_path):
@@ -129,7 +129,7 @@ def _apply_local_patches(patches_dir, log_path):
     patches = sorted(Path(patches_dir).glob("*.patch"))
     if not patches:
         log_write(log_path, "no local patches in %s\n" % patches_dir)
-        return 0
+        return 0, ""
 
     # Never touch a tree that already carries tracked edits: undoing a failed
     # 3-way merge would throw them away.
@@ -138,7 +138,7 @@ def _apply_local_patches(patches_dir, log_path):
              if line.strip() and not line.startswith("??")]
     if rc != 0 or dirty:
         log_write(log_path, "skipping local patches: tracked files are modified\n")
-        return 1
+        return 1, out
 
     failed = []
     for patch in patches:
@@ -168,9 +168,9 @@ def _apply_local_patches(patches_dir, log_path):
         failed.append(name)
 
     if failed:
-        return 1
+        return 1, "patches failed: %s" % ", ".join(failed)
     log_write(log_path, "local patches: %d applied\n" % len(patches))
-    return 0
+    return 0, ""
 
 
 def _push(run, steps):
