@@ -14,6 +14,8 @@
         <option value="nextcloud_db">nextcloud_db</option>
         <option value="immich_config">immich_config</option>
         <option value="nextcloud_config">nextcloud_config</option>
+        <option value="stalwart_db">stalwart_db</option>
+        <option value="stalwart_config">stalwart_config</option>
         <option value="all">all (bash script)</option>
         <option value="custom">custom</option>
       </select>
@@ -26,98 +28,160 @@
   </form>
 </div>
 
-<div class="card">
-  <h3>Tasks</h3>
-  <table>
-    <thead><tr><th>Name</th><th>Kind</th><th>Schedule</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Actions</th></tr></thead>
-    <tbody>
-    {% for t in tasks %}
-      <tr>
-        <td>{{ t.name }}</td>
-        <td>{{ t.kind }}</td>
-        <td>{{ t.schedule_cron or 'manual' }}</td>
-        <td>{{ t.enabled }}</td>
-        <td>{{ t.last_run_at or '-' }}</td>
-        <td>{{ t.last_status or '-' }}</td>
-        <td>
-          <form method="post" action="{{ url_for('backups.run_task', tid=t.id) }}" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn ok" type="submit" data-confirm="Запустить задачу {{ t.name }}?">Run</button>
-          </form>
-          <details style="display:inline-block;vertical-align:middle;">
-            <summary class="btn" style="list-style:none;cursor:pointer;">Edit</summary>
-            <form method="post" action="{{ url_for('backups.update_task', tid=t.id) }}" style="margin-top:8px;min-width:320px;">
+{% set kind_groups = {
+    'immich': ['immich_db', 'immich_config'],
+    'nextcloud': ['nextcloud_db', 'nextcloud_config'],
+    'stalwart': ['stalwart_db', 'stalwart_config'],
+    'other': ['all', 'custom']
+} %}
+
+{% set tasks_by_group = {} %}
+{% for t in tasks %}
+  {% set group = 'other' %}
+  {% for g, kinds in kind_groups.items() %}
+    {% if t.kind in kinds %}
+      {% set group = g %}
+    {% endif %}
+  {% endfor %}
+  {% set _ = tasks_by_group.setdefault(group, []).append(t) %}
+{% endfor %}
+
+{% for group_name in ['immich','nextcloud','stalwart','other'] %}
+  {% if tasks_by_group.get(group_name) %}
+  <div class="card" style="margin-top:16px;">
+    <h3>{{ group_name | upper }} Tasks</h3>
+    <table style="width:100%;">
+      <thead><tr><th>Name</th><th>Kind</th><th>Schedule</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for t in tasks_by_group[group_name] %}
+        <tr style="border-bottom:1px solid #334155;">
+          <td>{{ t.name }}</td>
+          <td>{{ t.kind }}</td>
+          <td>{{ t.schedule_cron or 'manual' }}</td>
+          <td>{{ t.enabled }}</td>
+          <td>{{ t.last_run_at or '-' }}</td>
+          <td>{{ t.last_status or '-' }}</td>
+          <td>
+            <form method="post" action="{{ url_for('backups.run_task', tid=t.id) }}" style="display:inline;">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <input name="name" value="{{ t.name }}" style="padding:4px;margin:2px;">
-              <select name="kind">
-                {% for k in ['immich_db','nextcloud_db','immich_config','nextcloud_config','all','custom'] %}
-                <option value="{{ k }}" {% if t.kind==k %}selected{% endif %}>{{ k }}</option>
-                {% endfor %}
-              </select><br>
-              <input name="schedule_cron" value="{{ t.schedule_cron or '' }}" placeholder="cron" style="padding:4px;margin:2px;">
-              <input name="retention_days" type="number" value="{{ t.retention_days }}" style="padding:4px;margin:2px;">
-              <label><input type="checkbox" name="enabled" {% if t.enabled %}checked{% endif %}> enabled</label><br>
-              <textarea name="command" rows="2" style="width:100%;margin:2px;">{{ t.command or '' }}</textarea>
-              <button class="btn ok" type="submit" style="margin-top:4px;" data-confirm="Сохранить изменения задачи {{ t.name }}?">Save</button>
+              <button class="btn ok" type="submit" data-confirm="Запустить задачу {{ t.name }}?">Run</button>
             </form>
-          </details>
-          <form method="post" action="{{ url_for('backups.delete_task', tid=t.id) }}" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn danger" type="submit" data-confirm="Удалить задачу {{ t.name }}?">Delete</button>
-          </form>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
+            <details style="display:inline-block;vertical-align:middle;">
+              <summary class="btn" style="list-style:none;cursor:pointer;">Edit</summary>
+              <form method="post" action="{{ url_for('backups.update_task', tid=t.id) }}" style="margin-top:8px;min-width:320px;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input name="name" value="{{ t.name }}" style="padding:4px;margin:2px;">
+                <select name="kind">
+                  {% for k in ['immich_db','nextcloud_db','immich_config','nextcloud_config','stalwart_db','stalwart_config','all','custom'] %}
+                  <option value="{{ k }}" {% if t.kind==k %}selected{% endif %}>{{ k }}</option>
+                  {% endfor %}
+                </select><br>
+                <input name="schedule_cron" value="{{ t.schedule_cron or '' }}" placeholder="cron" style="padding:4px;margin:2px;">
+                <input name="retention_days" type="number" value="{{ t.retention_days }}" style="padding:4px;margin:2px;">
+                <label><input type="checkbox" name="enabled" {% if t.enabled %}checked{% endif %}> enabled</label><br>
+                <textarea name="command" rows="2" style="width:100%;margin:2px;">{{ t.command or '' }}</textarea>
+                <button class="btn ok" type="submit" style="margin-top:4px;" data-confirm="Сохранить изменения задачи {{ t.name }}?">Save</button>
+              </form>
+            </details>
+            <form method="post" action="{{ url_for('backups.delete_task', tid=t.id) }}" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn danger" type="submit" data-confirm="Удалить задачу {{ t.name }}?">Delete</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+{% endfor %}
 
-<div class="card">
+<div class="card" style="margin-top:16px;">
   <h3>Recent runs</h3>
-  <table>
-    <thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Started</th><th>Files</th></tr></thead>
-    <tbody>
-    {% for r in runs %}
-      <tr>
-        <td>{{ r.id }}</td>
-        <td>{{ r.task_id }}</td>
-        <td>{{ r.status }}</td>
-        <td>{{ r.started_at }}</td>
-        <td><pre style="font-size:11px;">{{ r.files }}</pre></td>
-      </tr>
+  {% set runs_by_group = {} %}
+  {% for r in runs %}
+    {% set group = 'other' %}
+    {% for t in tasks %}
+      {% if t.id == r.task_id %}
+        {% for g, kinds in kind_groups.items() %}
+          {% if t.kind in kinds %}
+            {% set group = g %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
     {% endfor %}
-    </tbody>
-  </table>
+    {% set _ = runs_by_group.setdefault(group, []).append(r) %}
+  {% endfor %}
+
+  {% for group_name in ['immich','nextcloud','stalwart','other'] %}
+    {% if runs_by_group.get(group_name) %}
+    <h4 style="margin:12px 0 4px;">{{ group_name | upper }}</h4>
+    <table style="width:100%;">
+      <thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Started</th><th>Files</th></tr></thead>
+      <tbody>
+      {% for r in runs_by_group[group_name] %}
+        <tr style="border-bottom:1px solid #334155;">
+          <td>{{ r.id }}</td>
+          <td>{{ r.task_id }}</td>
+          <td>{{ r.status }}</td>
+          <td>{{ r.started_at }}</td>
+          <td><pre style="font-size:11px;">{{ r.files }}</pre></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  {% endfor %}
 </div>
 
-<div class="card">
+<div class="card" style="margin-top:16px;">
   <h3>Files</h3>
-  <table>
-    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
-    <tbody>
-    {% for f in files %}
-      <tr>
-        <td>{{ f.rel }}</td>
-        <td>{{ (f.size/1024/1024)|round(2) }} MB</td>
-        <td>{{ f.mtime }}</td>
-        <td>
-          <a class="btn" href="{{ url_for('backups.download_file', rel=f.rel) }}">Download</a>
-          {% if f.name.endswith('.dump') %}
-          <form method="post" action="{{ url_for('backups.verify_file') }}" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="rel" value="{{ f.rel }}">
-            <button class="btn" type="submit" data-confirm="Проверить backup-файл {{ f.rel }}?">Verify</button>
-          </form>
-          {% endif %}
-          <form method="post" action="{{ url_for('backups.delete_file') }}" style="display:inline;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="rel" value="{{ f.rel }}">
-            <button class="btn danger" type="submit" data-confirm="Удалить backup-файл {{ f.rel }}?">Delete</button>
-          </form>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  {% set files_by_group = {} %}
+  {% for f in files %}
+    {% set group = 'other' %}
+    {% if f.rel.startswith('immich/') %}
+      {% set group = 'immich' %}
+    {% elif f.rel.startswith('nextcloud/') %}
+      {% set group = 'nextcloud' %}
+    {% elif f.rel.startswith('stalwart/') %}
+      {% set group = 'stalwart' %}
+    {% elif f.rel.startswith('logs/') %}
+      {% set group = 'logs' %}
+    {% endif %}
+    {% set _ = files_by_group.setdefault(group, []).append(f) %}
+  {% endfor %}
+
+  {% for group_name in ['immich','nextcloud','stalwart','logs','other'] %}
+    {% if files_by_group.get(group_name) %}
+    <h4 style="margin:12px 0 4px;">{{ group_name | upper }}</h4>
+    <table style="width:100%;">
+      <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for f in files_by_group[group_name] %}
+        <tr style="border-bottom:1px solid #334155;">
+          <td>{{ f.rel }}</td>
+          <td>{{ (f.size/1024/1024)|round(2) }} MB</td>
+          <td>{{ f.mtime }}</td>
+          <td>
+            <a class="btn" href="{{ url_for('backups.download_file', rel=f.rel) }}">Download</a>
+            {% if f.name.endswith('.dump') %}
+            <form method="post" action="{{ url_for('backups.verify_file') }}" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="rel" value="{{ f.rel }}">
+              <button class="btn" type="submit" data-confirm="Проверить backup-файл {{ f.rel }}?">Verify</button>
+            </form>
+            {% endif %}
+            <form method="post" action="{{ url_for('backups.delete_file') }}" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="rel" value="{{ f.rel }}">
+              <button class="btn danger" type="submit" data-confirm="Удалить backup-файл {{ f.rel }}?">Delete</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  {% endfor %}
 </div>
 {% endblock %}
