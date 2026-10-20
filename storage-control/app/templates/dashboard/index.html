@@ -60,9 +60,9 @@
 </div>
 
 <div class="card">
-  <h3>SMART</h3>
+  <h3>SMART <button id="smart-refresh-btn" class="btn" style="font-size:12px;padding:4px 10px;margin-left:12px;vertical-align:middle;" onclick="refreshSmartManual()">Refresh SMART Info</button></h3>
   <table id="smart-table">
-    <thead><tr><th>Device</th><th>Model</th><th>Health</th><th>Temp</th><th>Reallocated</th><th>Pending</th></tr></thead>
+    <thead><tr><th>Device</th><th>Model</th><th>Health</th><th>Temp</th><th>Reallocated</th><th>Pending</th><th>Offline</th><th>ATA Errors</th><th>Baseline</th></tr></thead>
     <tbody></tbody>
   </table>
   <div id="smart-alarms-block" style="margin-top:14px;padding:12px;border:1px solid #334155;border-radius:8px;background:#0f172a;">
@@ -202,47 +202,111 @@ async function refreshSvc(){
 }
 async function refreshSmart(){
   try {
-    const r = await fetch('/api/health/smart');
-    const list = await r.json();
-    const tb = document.querySelector('#smart-table tbody');
-    tb.innerHTML = '';
-    for (const d of list) {
-      const tr = document.createElement('tr');
-      tr.setAttribute('data-device', d.device);
-      tr.innerHTML = `<td>${d.device}</td><td>${d.model||'-'}</td><td>${d.health}</td><td>${d.temperature!=null?d.temperature+'°C':'-'}</td><td>${d.attributes.Reallocated_Sector_Ct??'-'}</td><td>${d.attributes.Current_Pending_Sector??'-'}</td>`;
-      tb.appendChild(tr);
-    }
-    await refreshSmartStatus();
-  } catch(e){ console.error(e); }
-}
-async function refreshSmartStatus(){
-  try {
     const r = await fetch('/api/health/smart/status');
     const d = await r.json();
-    const alertDiv = document.getElementById('smart-alerts');
-    const alertBlock = document.getElementById('smart-alarms-block');
-    const alertTitle = document.getElementById('smart-alarms-title');
-    const alerts = d.alerts || [];
-    if (alertBlock) {
-      alertBlock.style.borderColor = alerts.length ? '#7f1d1d' : '#334155';
-      alertBlock.style.background = alerts.length ? '#2b1212' : '#0f172a';
-    }
-    if (alertTitle) alertTitle.style.color = alerts.length ? '#fecaca' : '#94a3b8';
-    if (alertDiv) {
-      if (!alerts.length) alertDiv.innerHTML = '<div class="muted">Ночью алармов SMART не выявлено.</div>';
-      else alertDiv.innerHTML = alerts.map(a => '<div class="flash danger" style="background:#7f1d1d;border-left:4px solid #ef4444;">' + a.device + ' · ' + a.severity.toUpperCase() + ': ' + a.message + '</div>').join('');
-    }
-    const rows = document.querySelectorAll('#smart-table tbody tr');
-    const alertDevs = new Set(alerts.map(a => a.device));
-    rows.forEach(row => {
-      const dev = row.getAttribute('data-device');
-      if (alertDevs.has(dev)) {
-        row.style.background = '#7f1d1d';
-        if (row.cells[2]) row.cells[2].innerHTML = '<span class="badge inactive">ALARM</span>';
-      } else {
-        row.style.background = '';
+    const tb = document.querySelector('#smart-table tbody');
+    tb.innerHTML = '';
+    for (const s of d.states || []) {
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-device', s.device);
+      
+      // Check if any counter increased since baseline
+      const baseline = s.baseline || {};
+      const increased = [];
+      if (baseline.reallocated != null && s.reallocated > baseline.reallocated) increased.push('reallocated');
+      if (baseline.pending != null && s.pending > baseline.pending) increased.push('pending');
+      if (baseline.offline != null && s.offline_uncorrectable > baseline.offline) increased.push('offline');
+      if (baseline.ata_errors != null && s.ata_error_count > baseline.ata_errors) increased.push('ata');
+      
+      // Format baseline display
+      let baselineHtml = '-';
+      if (Object.keys(baseline).length) {
+        baselineHtml = `R:${baseline.reallocated??'-'} P:${baseline.pending??'-'} O:${baseline.offline??'-'} A:${baseline.ata_errors??'-'}`;
       }
-    });
+      
+      // Build cells with bold for increased counters
+      const reallocCell = increased.includes('reallocated') ? 
+        `<td><strong>${s.reallocated}</strong></td>` : `<td>${s.reallocated}</td>`;
+      const pendingCell = increased.includes('pending') ? 
+        `<td><strong>${s.pending}</strong></td>` : `<td>${s.pending}</td>`;
+      const offlineCell = increased.includes('offline') ? 
+        `<td><strong>${s.offline_uncorrectable}</strong></td>` : `<td>${s.offline_uncorrectable}</td>`;
+      const ataCell = increased.includes('ata') ? 
+        `<td><strong>${s.ata_error_count}</strong></td>` : `<td>${s.ata_error_count}</td>`;
+      
+      tr.innerHTML = `<td>${s.device}</td><td>${s.model||'-'}</td><td>${s.health}</td><td>${s.temperature!=null?s.temperature+'°C':'-'}</td>` +
+        reallocCell + pendingCell + offlineCell + ataCell + `<td>${baselineHtml}</td>`;
+      tb.appendChild(tr);
+    }
+    await refreshSmartAlerts(d.alerts || []);
+  } catch(e){ console.error(e); }
+}
+
+async function refreshSmartAlerts(alerts) {
+  const alertDiv = document.getElementById('smart-alerts');
+  const alertBlock = document.getElementById('smart-alarms-block');
+  const alertTitle = document.getElementById('smart-alarms-title');
+  
+  if (alertBlock) {
+    alertBlock.style.borderColor = alerts.length ? '#7f1d1d' : '#334155';
+    alertBlock.style.background = alerts.length ? '#2b1212' : '#0f172a';
+  }
+  if (alertTitle) alertTitle.style.color = alerts.length ? '#fecaca' : '#94a3b8';
+  if (alertDiv) {
+    if (!alerts.length) {
+      alertDiv.innerHTML = '<div class="muted">Ночью алармов SMART не выявлено.</div>';
+    } else {
+      alertDiv.innerHTML = alerts.map(a => 
+        '<div class="flash danger" style="background:#7f1d1d;border-left:4px solid #ef4444;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">' +
+        '<div style="flex:1;">' + a.device + ' · ' + a.severity.toUpperCase() + ': ' + a.message + '</div>' +
+        '<button class="btn" style="padding:4px 10px;font-size:12px;flex-shrink:0;" onclick="resolveSmartAlert(' + a.id + ')">Resolve</button></div>'
+      ).join('');
+    }
+  }
+  // Highlight rows with active alerts
+  const rows = document.querySelectorAll('#smart-table tbody tr');
+  const alertDevs = new Set(alerts.map(a => a.device));
+  rows.forEach(row => {
+    const dev = row.getAttribute('data-device');
+    if (alertDevs.has(dev)) {
+      row.style.background = '#7f1d1d';
+      if (row.cells[2]) row.cells[2].innerHTML = '<span class="badge inactive">ALARM</span>';
+    } else {
+      row.style.background = '';
+    }
+  });
+}
+
+async function refreshSmartManual() {
+  const btn = document.getElementById('smart-refresh-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+  }
+  try {
+    const r = await fetch('/api/health/smart/refresh', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      await refreshSmart();
+    }
+  } catch(e) { console.error(e); }
+  finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Refresh SMART Info';
+    }
+  }
+}
+
+async function resolveSmartAlert(alertId){
+  try {
+    const r = await fetch('/api/health/smart/alert/' + alertId + '/resolve', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      await refreshSmart();
+    } else {
+      console.error('Failed to resolve alert:', d);
+    }
   } catch(e){ console.error(e); }
 }
 async function refreshUpdates(){

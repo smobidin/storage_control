@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from flask_login import UserMixin
 from .extensions import db
 
@@ -104,9 +104,26 @@ class SmartDiskState(db.Model):
     temperature = db.Column(db.Integer)
     power_on_hours = db.Column(db.Integer)
     smartctl_rc = db.Column(db.Integer)
-    first_seen_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_checked_at = db.Column(db.DateTime, default=datetime.utcnow)
+    first_seen_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    last_checked_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     raw_summary = db.Column(db.Text)
+    # Baseline counters at last user resolution (JSON: reallocated, pending, offline, ata_errors)
+    resolved_counters = db.Column(db.Text)  # JSON string
+
+
+class SmartDiskCounterHistory(db.Model):
+    """Historical record of SMART counters for trend analysis."""
+    id = db.Column(db.Integer, primary_key=True)
+    device = db.Column(db.String(32), nullable=False, index=True)
+    reallocated = db.Column(db.Integer, default=0)
+    pending = db.Column(db.Integer, default=0)
+    offline_uncorrectable = db.Column(db.Integer, default=0)
+    ata_error_count = db.Column(db.Integer, default=0)
+    temperature = db.Column(db.Integer)
+    health = db.Column(db.String(32))
+    smartctl_rc = db.Column(db.Integer)
+    checked_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    source = db.Column(db.String(16), default="auto")  # auto|manual
 
 
 class SmartAlert(db.Model):
@@ -115,5 +132,7 @@ class SmartAlert(db.Model):
     severity = db.Column(db.String(16), default="warning")  # warning|critical
     message = db.Column(db.Text, nullable=False)
     active = db.Column(db.Boolean, default=True, index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     resolved_at = db.Column(db.DateTime)
+    # Counters at the time this alert was created (for comparison)
+    alert_counters = db.Column(db.Text)  # JSON string
