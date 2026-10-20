@@ -6,7 +6,11 @@
 
 set -uo pipefail
 
+# Export all variables from .env (needed for DB_URL to be available in Node)
+set -a
 source /home/storage/immich/.env
+set +a
+
 /home/storage/immich/node/bin/node /home/storage/dev/stoage_system_tools/tools/immich/night_fix_thumbnails.cjs "$@"
 EXIT_CODE=$?
 
