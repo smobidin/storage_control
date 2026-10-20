@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 /**
- * Ночной фикс превьюшек Immich для Samsung HEIC (пока sharp не обновился до libheif 1.23.4).
- * Находит ассеты без thumbhash, декодирует их libheif 1.23.4/dcraw/sharp,
- * генерирует preview/thumbnail/thumbhash и пишет в БД + файлы.
- * Выход: 0 = работы не было или всё починено; 1 = что-то не починилось.
+ * Оптимизированный ночной фикс превьюшек Immich.
+ * Теперь sharp нативно обрабатывает HEIC/HEIF (libheif 1.23.5 + libde265).
+ * Остаются только форматы, которые sharp НЕ умеет читать:
+ *   - RAW: CR2, NEF, ARW, DNG, ORF, RAF, RW2, PEF, SRW
+ *   - BMP (битые заголовки), PSD/PSB
+ *   - Видео: MOV, MP4, MKV, WEBM, AVI, 3GP, M4V, MTS, M2TS
  *
- * Файл намеренно лежит в репозитории storage_control, а не в ~/immich/src:
- * Preserve делает `git stash push -u`, который уносит untracked-файлы immich,
- * и скрипт исчезал из рабочего дерева (так и произошло 2026-10-14).
- * Зависимости (sharp/pg/thumbhash/exiftool) берутся из node_modules immich-server
- * через createRequire: NODE_PATH не действует на динамический import(),
- * а захардкоженные пути .pnpm меняются после каждого pnpm install.
+ * Запуск: DB_URL=postgresql://... node night_fix_thumbnails.cjs [--dry-run] [--concurrency=N]
  */
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -25,139 +22,231 @@ const immichRequire = createRequire(path.join(IMMICH_SERVER, 'package.json'));
 const sharp = immichRequire('sharp');
 const { Client } = immichRequire('pg');
 
-const HEIF_DEC = '/home/storage/immich/tools/libheif-1.23.4/heif-dec';
-const HEIF_LIB = '/home/storage/immich/tools/libheif-1.23.4/lib';
+// Константы
 const THUMBS_ROOT = '/mnt/data/immich/library/thumbs';
 const USER_ID = '9452cd5c-87c4-47fd-a861-aad0b36a1552';
+const TMP_DIR = '/tmp/nightfix';
 
-/** exiftool-vendored.pl — транзитивная зависимость: резолвится только по .pnpm,
- *  где версия в имени каталога меняется при каждом pnpm install. Берём свежую. */
-function findExiftool() {
+// Форматы, которые sharp теперь умеет нативно (HEIC/HEIF убраны)
+const NATIVE_FORMATS = new Set([
+  'jpg', 'jpeg', 'png', 'webp', 'gif', 'tiff', 'tif', 'avif', 'heic', 'heif',
+  'bmp', 'jxl', 'jp2', 'j2k', 'jpf', 'jpx', 'jpm', 'mj2'
+]);
+
+// Форматы, требующие внешние инструменты
+const RAW_FORMATS = new Set(['cr2', 'nef', 'arw', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw']);
+const VIDEO_FORMATS = new Set(['mov', 'mp4', 'mkv', 'webm', 'avi', '3gp', 'm4v', 'mts', 'm2ts']);
+const PSD_FORMATS = new Set(['psd', 'psb']);
+
+// CLI args
+const DRY_RUN = process.argv.includes('--dry-run');
+const CONCURRENCY = parseInt(process.argv.find(a => a.startsWith('--concurrency='))?.split('=')[1] || '2', 10);
+
+// Находим exiftool (лениво, только при необходимости)
+let ET = null;
+function getExiftool() {
+  if (ET) return ET;
   const base = path.join(IMMICH_SRC, 'node_modules', '.pnpm');
   const dirs = fs.readdirSync(base)
-    .filter((d) => d.startsWith('exiftool-vendored.pl@'))
+    .filter(d => d.startsWith('exiftool-vendored.pl@'))
     .sort();
   if (dirs.length === 0) throw new Error('exiftool-vendored.pl not found in ' + base);
   const bin = path.join(base, dirs.at(-1), 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
   if (!fs.existsSync(bin)) throw new Error('exiftool binary not found: ' + bin);
-  return bin;
+  ET = bin;
+  return ET;
 }
 
-const ET = findExiftool();
+// Убедимся, что temp директория существует
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
-async function fixAsset(client, asset) {
+/** Очистка временных файлов для одного ассета */
+function cleanupTemp(baseName) {
+  const exts = ['', '.ppm', '.src', '.fixed.bmp', '.jpg'];
+  for (const ext of exts) {
+    try { fs.unlinkSync(path.join(TMP_DIR, baseName + ext)); } catch {}
+  }
+}
+
+/** Один проход sharp: preview + thumbnail + thumbhash за раз */
+async function processWithSharp(srcPath) {
+  // Читаем метаданные один раз
+  const meta = await sharp(srcPath).metadata();
+
+  // Параллельно генерируем все три варианта
+  const [previewBuf, thumbBuf, { data, info }] = await Promise.all([
+    sharp(srcPath).resize(1440, 1440, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80, progressive: false }).toBuffer(),
+    sharp(srcPath).resize(250, 250, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 80 }).toBuffer(),
+    sharp(srcPath).resize(100, 100, { fit: 'inside', withoutEnlargement: true }).raw().ensureAlpha().toBuffer({ resolveWithObject: true })
+  ]);
+
+  const { rgbaToThumbHash } = await import(pathToFileURL(immichRequire.resolve('thumbhash')));
+  const thumbhash = Buffer.from(rgbaToThumbHash(info.width, info.height, data));
+
+  return { previewBuf, thumbBuf, thumbhash, meta };
+}
+
+/** Декодирует один ассет во временный JPEG */
+async function decodeToJpeg(asset) {
   const src = asset.originalPath;
   const ext = src.toLowerCase().split('.').pop();
-  const tmpImg = `/tmp/nightfix_${asset.id}.jpg`;
+  const baseName = `nightfix_${asset.id}`;
+  const tmpImg = path.join(TMP_DIR, baseName + '.jpg');
+
   try {
-    if (ext === 'heic' || ext === 'heif') {
-      // Samsung HEIC: декодируем libheif 1.23.4
-      execFileSync(HEIF_DEC, [src, tmpImg], {
-        stdio: 'pipe',
-        env: { ...process.env, LD_LIBRARY_PATH: HEIF_LIB },
-      });
-    } else if (ext === 'dng' || ext === 'arw' || ext === 'nef' || ext === 'cr2' || ext === 'raf' || ext === 'orf') {
-      // RAW (вкл. Olympus ORF): сначала пробуем встроенный PreviewImage через exiftool
+    // 1. Нативные форматы — читаем sharp напрямую, конвертируем в JPEG
+    if (NATIVE_FORMATS.has(ext)) {
+      await sharp(src).jpeg({ quality: 90 }).toFile(tmpImg);
+      return tmpImg;
+    }
+
+    // 2. RAW: пробуем встроенный PreviewImage через exiftool
+    if (RAW_FORMATS.has(ext)) {
       let buf = Buffer.alloc(0);
       try {
-        buf = execFileSync('perl', [ET, '-b', '-PreviewImage', src], { maxBuffer: 100 * 1024 * 1024 });
-      } catch (e) { /* exiftool может упасть на битом файле — идём в dcraw */ }
-      if (buf.length < 1000) {
-        // Нет встроенного превью: демозаиким dcraw → PPM → ImageMagick → JPEG
-        const ppm = execFileSync('dcraw', ['-c', '-w', '-q', '3', src], { maxBuffer: 200 * 1024 * 1024 });
-        fs.writeFileSync(tmpImg + '.ppm', ppm);
-        try {
-          execFileSync('convert', [tmpImg + '.ppm', '-quality', '90', tmpImg]);
-        } finally {
-          fs.unlinkSync(tmpImg + '.ppm');
-        }
-      } else {
+        buf = execFileSync('perl', [getExiftool(), '-b', '-PreviewImage', src], { maxBuffer: 100 * 1024 * 1024 });
+      } catch { /* игнорируем ошибки exiftool */ }
+      if (buf.length >= 1000) {
         fs.writeFileSync(tmpImg, buf);
+        return tmpImg;
       }
-    } else if (ext === 'bmp') {
-      // BMP: sharp его не читает — конвертируем напрямую через ImageMagick.
-      // Если заголовок битый (cbSize != реальный размер), ImageMagick падает —
-      // тогда пересобираем cbSize на фактический размер файла (данные не трогаем).
+      // Нет превью — полная демозаика через dcraw + ImageMagick
+      const ppm = execFileSync('dcraw', ['-c', '-w', '-q', '3', src], { maxBuffer: 200 * 1024 * 1024 });
+      const ppmPath = path.join(TMP_DIR, baseName + '.ppm');
+      fs.writeFileSync(ppmPath, ppm);
+      try {
+        execFileSync('convert', [ppmPath, '-quality', '90', tmpImg], { stdio: 'pipe' });
+        return tmpImg;
+      } finally {
+        try { fs.unlinkSync(ppmPath); } catch {}
+      }
+    }
+
+    // 3. BMP: пробуем ImageMagick, при битом заголовке — чиним cbSize
+    if (ext === 'bmp') {
       try {
         execFileSync('convert', [src, '-quality', '90', tmpImg], { stdio: 'pipe' });
-      } catch (e) {
+        return tmpImg;
+      } catch {
         const buf = fs.readFileSync(src);
         if (buf.length >= 54 && buf.toString('ascii', 0, 2) === 'BM') {
           const fixed = Buffer.from(buf);
-          fixed.writeUInt32LE(buf.length, 2); // cbSize = фактический размер
-          const fixedSrc = tmpImg + '.fixed.bmp';
+          fixed.writeUInt32LE(buf.length, 2);
+          const fixedSrc = path.join(TMP_DIR, baseName + '.fixed.bmp');
           fs.writeFileSync(fixedSrc, fixed);
           try {
             execFileSync('convert', [fixedSrc, '-quality', '90', tmpImg], { stdio: 'pipe' });
+            return tmpImg;
           } finally {
             try { fs.unlinkSync(fixedSrc); } catch {}
           }
-        } else {
-          throw e;
         }
-      }
-    } else if (ext === 'psd' || ext === 'psb') {
-      // PSD: sharp его не читает — берём композитный кадр через ImageMagick ([0] = merged image)
-      execFileSync('convert', [src + '[0]', '-quality', '90', tmpImg], { stdio: 'pipe' });
-    } else if (['mov', 'mp4', 'mkv', 'webm', 'avi', '3gp', 'm4v', 'mts', 'm2ts'].includes(ext)) {
-      // Видео: sharp видео не читает — кадр через ffmpeg (первый кадр)
-      execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-q:v', '2', tmpImg], { stdio: 'pipe' });
-    } else {
-      // прочее: пробуем напрямую sharp
-      fs.copyFileSync(src, tmpImg + '.src');
-      try {
-        await sharp(tmpImg + '.src').jpeg({ quality: 90 }).toFile(tmpImg);
-      } finally {
-        fs.unlinkSync(tmpImg + '.src');
+        throw new Error('BMP decode failed');
       }
     }
-    // Маленькие картинки (иконки 16x16) дают JPEG < 1000 байт — это нормально.
-    if (!fs.existsSync(tmpImg) || fs.statSync(tmpImg).size < 100) throw new Error('decode produced nothing');
 
-    const previewBuf = await sharp(tmpImg)
-      .resize(1440, 1440, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 80, progressive: false })
-      .toBuffer();
+    // 4. PSD/PSB: композитный кадр через ImageMagick
+    if (PSD_FORMATS.has(ext)) {
+      execFileSync('convert', [src + '[0]', '-quality', '90', tmpImg], { stdio: 'pipe' });
+      return tmpImg;
+    }
 
-    const thumbBuf = await sharp(tmpImg)
-      .resize(250, 250, { fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 80 })
-      .toBuffer();
+    // 5. Видео: первый кадр через ffmpeg
+    if (VIDEO_FORMATS.has(ext)) {
+      execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', src, '-frames:v', '1', '-q:v', '2', tmpImg], { stdio: 'pipe' });
+      return tmpImg;
+    }
 
-    const { data, info } = await sharp(tmpImg)
-      .resize(100, 100, { fit: 'inside', withoutEnlargement: true })
-      .raw()
-      .ensureAlpha()
-      .toBuffer({ resolveWithObject: true });
-    const { rgbaToThumbHash } = await import(pathToFileURL(immichRequire.resolve('thumbhash')));
-    const thumbhash = Buffer.from(rgbaToThumbHash(info.width, info.height, data));
+    // 6. Неизвестное расширение — пробуем sharp напрямую
+    await sharp(src).jpeg({ quality: 90 }).toFile(tmpImg);
+    return tmpImg;
+  } catch (e) {
+    cleanupTemp(baseName);
+    throw e;
+  }
+}
 
-    const dir = path.join(THUMBS_ROOT, USER_ID, asset.id.slice(0, 2), asset.id.slice(2, 4));
-    fs.mkdirSync(dir, { recursive: true });
-    const previewPath = path.join(dir, `${asset.id}_preview.jpeg`);
-    const thumbPath = path.join(dir, `${asset.id}_thumbnail.webp`);
-    fs.writeFileSync(previewPath, previewBuf);
-    fs.writeFileSync(thumbPath, thumbBuf);
+/** Обрабатывает один ассет */
+async function fixAsset(client, asset) {
+  const src = asset.originalPath;
+  const ext = src.toLowerCase().split('.').pop();
+  const baseName = `nightfix_${asset.id}`;
 
-    for (const [type, p] of [['preview', previewPath], ['thumbnail', thumbPath]]) {
+  try {
+    // Декодируем во временный JPEG
+    const tmpImg = await decodeToJpeg(asset);
+
+    // Проверка что файл создался и не пустой
+    const stat = fs.statSync(tmpImg);
+    if (stat.size < 100) throw new Error('decode produced nothing');
+
+    // Генерируем preview/thumbnail/thumbhash
+    const { previewBuf, thumbBuf, thumbhash } = await processWithSharp(tmpImg);
+
+    if (!DRY_RUN) {
+      // Записываем файлы
+      const dir = path.join(THUMBS_ROOT, USER_ID, asset.id.slice(0, 2), asset.id.slice(2, 4));
+      fs.mkdirSync(dir, { recursive: true });
+      const previewPath = path.join(dir, `${asset.id}_preview.jpeg`);
+      const thumbPath = path.join(dir, `${asset.id}_thumbnail.webp`);
+      fs.writeFileSync(previewPath, previewBuf);
+      fs.writeFileSync(thumbPath, thumbBuf);
+
+      // Обновляем БД
       await client.query(
         `INSERT INTO asset_file (id, "assetId", type, path, "createdAt", "updatedAt", "isEdited", "isProgressive", "isTransparent")
          VALUES (gen_random_uuid(), $1, $2, $3, now(), now(), false, false, false)`,
-        [asset.id, type, p]
+        [asset.id, 'preview', previewPath]
+      );
+      await client.query(
+        `INSERT INTO asset_file (id, "assetId", type, path, "createdAt", "updatedAt", "isEdited", "isProgressive", "isTransparent")
+         VALUES (gen_random_uuid(), $1, $2, $3, now(), now(), false, false, false)`,
+        [asset.id, 'thumbnail', thumbPath]
+      );
+      await client.query(
+        `UPDATE asset SET thumbhash = $1, visibility = CASE WHEN visibility = 'hidden' THEN 'timeline' ELSE visibility END WHERE id = $2`,
+        [thumbhash, asset.id]
       );
     }
-    await client.query(`UPDATE asset SET thumbhash = $1, visibility = CASE WHEN visibility = 'hidden' THEN 'timeline' ELSE visibility END WHERE id = $2`, [thumbhash, asset.id]);
 
-    fs.unlinkSync(tmpImg);
+    // Чистим temp
+    cleanupTemp(baseName);
     return true;
   } catch (e) {
-    try { fs.unlinkSync(tmpImg); } catch {}
-    console.error(`FAIL ${asset.id} (${ext}): ${String(e.message).split('\n')[0]}`);
+    cleanupTemp(baseName);
+    const msg = String(e.message).split('\n')[0];
+    console.error(`FAIL ${asset.id} (${ext}): ${msg}`);
     return false;
   }
 }
 
+/** Очередь с ограничением параллелизма */
+async function runQueue(assets, client) {
+  let ok = 0, fail = 0;
+  let index = 0;
+
+  async function worker() {
+    while (index < assets.length) {
+      const i = index++;
+      const asset = assets[i];
+      const result = await fixAsset(client, asset);
+      if (result) ok++; else fail++;
+      // Прогресс каждые 10 или в конце
+      if ((i + 1) % 10 === 0 || i === assets.length - 1) {
+        console.log(`  progress: ${i + 1}/${assets.length} (ok: ${ok}, fail: ${fail})`);
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, assets.length) }, () => worker());
+  await Promise.all(workers);
+  return { ok, fail };
+}
+
 async function main() {
+  console.log(`Nightfix started (concurrency=${CONCURRENCY}, dryRun=${DRY_RUN})`);
+  console.log(`Sharp: ${sharp.versions.sharp}, libvips: ${sharp.versions.vips}, heif: ${sharp.versions.heif}`);
+
   const client = new Client({ connectionString: process.env.DB_URL });
   await client.connect();
 
@@ -172,10 +261,8 @@ async function main() {
   }
 
   console.log(`assets to fix: ${assets.length}`);
-  let ok = 0, fail = 0;
-  for (const asset of assets) {
-    if (await fixAsset(client, asset)) ok++; else fail++;
-  }
+
+  const { ok, fail } = await runQueue(assets, client);
 
   const { rows: left } = await client.query(`SELECT count(*)::int AS n FROM asset WHERE thumbhash IS NULL`);
   console.log(`done: ${ok} fixed, ${fail} failed, ${left[0].n} still without thumbhash`);
@@ -184,4 +271,4 @@ async function main() {
   if (fail > 0 || left[0].n > 0) process.exit(1);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(e => { console.error(e); process.exit(1); });
