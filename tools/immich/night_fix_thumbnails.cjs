@@ -7,6 +7,11 @@
  *   - BMP (битые заголовки), PSD/PSB
  *   - Видео: MOV, MP4, MKV, WEBM, AVI, 3GP, M4V, MTS, M2TS
  *
+ * ВАЖНО: скрипт трогает ТОЛЬКО ассеты, у которых превью вообще нет
+ * (нет записи в asset_file с type=preview/isEdited=false либо файла на диске).
+ * Уже существующие превью не перезаписываются — их теперь умеет генерировать
+ * сам Immich (в том числе с EXIF-ориентацией, см. IMMICH_PROCESS_INVALID_IMAGES).
+ *
  * Запуск: DB_URL=postgresql://... node night_fix_thumbnails.cjs [--dry-run] [--concurrency=N]
  */
 const { execFileSync } = require('node:child_process');
@@ -38,6 +43,20 @@ const RAW_FORMATS = new Set(['cr2', 'nef', 'arw', 'dng', 'orf', 'raf', 'rw2', 'p
 const VIDEO_FORMATS = new Set(['mov', 'mp4', 'mkv', 'webm', 'avi', '3gp', 'm4v', 'mts', 'm2ts']);
 const PSD_FORMATS = new Set(['psd', 'psb']);
 
+// EXIF-ориентация -> трансформация sharp.
+// Совпадает с ORIENTATION_TO_SHARP_ROTATION в server/src/constants.ts в Immich,
+// чтобы превью совпадали с тем, что генерирует сам сервер.
+const ORIENTATION_TO_SHARP_ROTATION = {
+  1: { angle: 0 },
+  2: { angle: 0, flop: true },
+  3: { angle: 180 },
+  4: { angle: 180, flop: true },
+  5: { angle: 270, flip: true },
+  6: { angle: 90 },
+  7: { angle: 90, flip: true },
+  8: { angle: 270 },
+};
+
 // CLI args
 const DRY_RUN = process.argv.includes('--dry-run');
 const CONCURRENCY = parseInt(process.argv.find(a => a.startsWith('--concurrency='))?.split('=')[1] || '2', 10);
@@ -62,10 +81,27 @@ if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
 /** Очистка временных файлов для одного ассета */
 function cleanupTemp(baseName) {
-  const exts = ['', '.ppm', '.src', '.fixed.bmp', '.jpg'];
+  const exts = ['', '.ppm', '.src', '.fixed.bmp', '.jpg', '.rawpreview'];
   for (const ext of exts) {
     try { fs.unlinkSync(path.join(TMP_DIR, baseName + ext)); } catch {}
   }
+}
+
+/**
+ * Применяет EXIF-ориентацию исходника к превью.
+ * Встроенное превью RAW лежит в "сенсорной" ориентации и не содержит тега
+ * Orientation, поэтому без этого фото в UI отображается боком.
+ */
+async function applyOrientation(srcPath, dstPath, orientation) {
+  const { angle = 0, flip = false, flop = false } = ORIENTATION_TO_SHARP_ROTATION[orientation] ?? {};
+  if (!angle && !flip && !flop) {
+    fs.copyFileSync(srcPath, dstPath);
+    return;
+  }
+  let pipeline = sharp(srcPath).rotate(angle);
+  if (flip) pipeline = pipeline.flip();
+  if (flop) pipeline = pipeline.flop();
+  await pipeline.jpeg({ quality: 90 }).toFile(dstPath);
 }
 
 /** Один проход sharp: preview + thumbnail + thumbhash за раз */
@@ -100,25 +136,34 @@ async function decodeToJpeg(asset) {
       return tmpImg;
     }
 
-    // 2. RAW: пробуем встроенный PreviewImage через exiftool
+    // 2. RAW: пробуем встроенный PreviewImage через exiftool,
+    //    иначе — полная демозаика через dcraw + ImageMagick.
+    //    EXIF-ориентацию исходника применяем сами: превью встроено в
+    //    "сенсорной" ориентации и без этого отображается боком.
     if (RAW_FORMATS.has(ext)) {
+      const rawPreview = path.join(TMP_DIR, baseName + '.rawpreview');
       let buf = Buffer.alloc(0);
       try {
         buf = execFileSync('perl', [getExiftool(), '-b', '-PreviewImage', src], { maxBuffer: 100 * 1024 * 1024 });
       } catch { /* игнорируем ошибки exiftool */ }
       if (buf.length >= 1000) {
-        fs.writeFileSync(tmpImg, buf);
-        return tmpImg;
+        fs.writeFileSync(rawPreview, buf);
+      } else {
+        // Нет превью — полная демозаика через dcraw + ImageMagick
+        const ppm = execFileSync('dcraw', ['-c', '-w', '-q', '3', src], { maxBuffer: 200 * 1024 * 1024 });
+        const ppmPath = path.join(TMP_DIR, baseName + '.ppm');
+        fs.writeFileSync(ppmPath, ppm);
+        try {
+          execFileSync('convert', [ppmPath, '-quality', '90', rawPreview], { stdio: 'pipe' });
+        } finally {
+          try { fs.unlinkSync(ppmPath); } catch {}
+        }
       }
-      // Нет превью — полная демозаика через dcraw + ImageMagick
-      const ppm = execFileSync('dcraw', ['-c', '-w', '-q', '3', src], { maxBuffer: 200 * 1024 * 1024 });
-      const ppmPath = path.join(TMP_DIR, baseName + '.ppm');
-      fs.writeFileSync(ppmPath, ppm);
       try {
-        execFileSync('convert', [ppmPath, '-quality', '90', tmpImg], { stdio: 'pipe' });
+        await applyOrientation(rawPreview, tmpImg, asset.orientation);
         return tmpImg;
       } finally {
-        try { fs.unlinkSync(ppmPath); } catch {}
+        try { fs.unlinkSync(rawPreview); } catch {}
       }
     }
 
@@ -192,17 +237,20 @@ async function fixAsset(client, asset) {
       fs.writeFileSync(previewPath, previewBuf);
       fs.writeFileSync(thumbPath, thumbBuf);
 
-      // Обновляем БД
-      await client.query(
-        `INSERT INTO asset_file (id, "assetId", type, path, "createdAt", "updatedAt", "isEdited", "isProgressive", "isTransparent")
-         VALUES (gen_random_uuid(), $1, $2, $3, now(), now(), false, false, false)`,
-        [asset.id, 'preview', previewPath]
-      );
-      await client.query(
-        `INSERT INTO asset_file (id, "assetId", type, path, "createdAt", "updatedAt", "isEdited", "isProgressive", "isTransparent")
-         VALUES (gen_random_uuid(), $1, $2, $3, now(), now(), false, false, false)`,
-        [asset.id, 'thumbnail', thumbPath]
-      );
+      // Обновляем БД.
+      // (assetId, type, isEdited) — уникальный индекс, поэтому upsert, а не insert:
+      // у ассета может уже быть строка thumbnail, но не быть preview.
+      const upsertFile = (type, filePath) =>
+        client.query(
+          `INSERT INTO asset_file (id, "assetId", type, path, "createdAt", "updatedAt", "isEdited", "isProgressive", "isTransparent")
+           VALUES (gen_random_uuid(), $1, $2, $3, now(), now(), false, false, false)
+           ON CONFLICT ("assetId", type, "isEdited")
+           DO UPDATE SET path = EXCLUDED.path, "updatedAt" = now()`,
+          [asset.id, type, filePath]
+        );
+      await upsertFile('preview', previewPath);
+      await upsertFile('thumbnail', thumbPath);
+
       await client.query(
         `UPDATE asset SET thumbhash = $1, visibility = CASE WHEN visibility = 'hidden' THEN 'timeline' ELSE visibility END WHERE id = $2`,
         [thumbhash, asset.id]
@@ -243,6 +291,22 @@ async function runQueue(assets, client) {
   return { ok, fail };
 }
 
+/**
+ * Выбирает ассеты, у которых превью ВООБЩЕ нет:
+ * нет записи в asset_file (type=preview, isEdited=false) либо файла на диске.
+ * Всё, у чего превью уже есть, не трогаем — его генерирует сам Immich.
+ */
+async function selectTargets(client) {
+  const { rows } = await client.query(
+    `SELECT a.id, a."originalPath", e.orientation, f.path AS preview_path
+       FROM asset a
+       LEFT JOIN asset_exif e ON e."assetId" = a.id
+       LEFT JOIN asset_file f ON f."assetId" = a.id AND f.type = 'preview' AND f."isEdited" = false
+      WHERE a."deletedAt" IS NULL`
+  );
+  return rows.filter((a) => !a.preview_path || !fs.existsSync(a.preview_path));
+}
+
 async function main() {
   console.log(`Nightfix started (concurrency=${CONCURRENCY}, dryRun=${DRY_RUN})`);
   console.log(`Sharp: ${sharp.versions.sharp}, libvips: ${sharp.versions.vips}, heif: ${sharp.versions.heif}`);
@@ -250,9 +314,7 @@ async function main() {
   const client = new Client({ connectionString: process.env.DB_URL });
   await client.connect();
 
-  const { rows: assets } = await client.query(
-    `SELECT id, "originalPath" FROM asset WHERE thumbhash IS NULL`
-  );
+  const assets = await selectTargets(client);
 
   if (assets.length === 0) {
     console.log('nothing to fix');
@@ -264,11 +326,11 @@ async function main() {
 
   const { ok, fail } = await runQueue(assets, client);
 
-  const { rows: left } = await client.query(`SELECT count(*)::int AS n FROM asset WHERE thumbhash IS NULL`);
-  console.log(`done: ${ok} fixed, ${fail} failed, ${left[0].n} still without thumbhash`);
+  const left = (await selectTargets(client)).length;
+  console.log(`done: ${ok} fixed, ${fail} failed, ${left} still without preview`);
   await client.end();
 
-  if (fail > 0 || left[0].n > 0) {
+  if (fail > 0 || left > 0) {
     process.exit(1);
   }
   process.exit(0);
