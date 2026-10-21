@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-import os, json, time, shutil
+import os, json, time, shutil, tempfile
 
 from ..extensions import db
 from ..models import UpdateRun, AuditLog
@@ -36,7 +36,51 @@ def _tool_env():
         env["PATH"] = f"{node_bin}{os.pathsep}{env.get('PATH', '')}"
     # never let a corepack "continue? [Y/n]" prompt hang a background job
     env.setdefault("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+    # pnpm's update notifier prints an "Update available! x -> y" banner on
+    # every install. It is advisory only, but it has repeatedly suggested
+    # `corepack use pnpm@<newer>` -- a command that rewrites the upstream
+    # `packageManager` pin in package.json and breaks the frozen lockfile.
+    env.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")
     return env
+
+
+def _pnpm_pin():
+    """The pnpm version upstream pins in package.json (`packageManager`)."""
+    try:
+        pkg = json.loads((IMMICH_SRC / "package.json").read_text())
+    except Exception:
+        return ""
+    return str(pkg.get("packageManager") or "").strip()
+
+
+def _pnpm_pin_version(pin):
+    """`pnpm@11.27.1` / `pnpm@11.27.1+sha512.<hash>` -> `11.27.1`."""
+    _, _, spec = pin.partition("@")
+    return spec.split("+", 1)[0].strip()
+
+
+def _check_pnpm_version(node_env, log_path):
+    """Log the pnpm version the build will actually use and compare it to
+    the version pinned by upstream.
+
+    The pin is deliberate: the lockfile is validated against that pnpm
+    major. A mismatch means somebody ran `corepack use pnpm@...` inside
+    ~/immich/src, which rewrites package.json and makes the next
+    `git checkout <tag>` fail. Report it, but do not abort the update --
+    the build steps themselves fail loudly if the newer pnpm misbehaves.
+    """
+    rc, out = run_cmd(["pnpm", "--version"], cwd=IMMICH_SRC, env=node_env,
+                      log_path=log_path, timeout=120)
+    effective = (out or "").strip().splitlines()[-1].strip() if out else ""
+    pin = _pnpm_pin()
+    log_write(log_path, "pnpm in use: %s\n" % (effective or "?"))
+    log_write(log_path, "packageManager pin: %s\n" % (pin or "(none)"))
+    if pin and effective and effective != _pnpm_pin_version(pin):
+        log_write(log_path,
+                  "WARN: pnpm %s does not match the pinned %s; the pin comes "
+                  "from upstream and must not be changed locally\n"
+                  % (effective, pin))
+    return 0, effective
 
 
 # `/api/health` was dropped upstream (it now falls through to the SPA and
@@ -173,6 +217,68 @@ def _apply_local_patches(patches_dir, log_path):
     return 0, ""
 
 
+def _patched_files(patches_dir):
+    """Repo-relative paths of the tracked files the local patches touch."""
+    files = []
+    for patch in sorted(Path(patches_dir).glob("*.patch")):
+        rc, out = run_cmd(["git", "apply", "--numstat", str(patch)], cwd=IMMICH_SRC)
+        if rc != 0:
+            continue
+        for line in (out or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            path = parts[2].strip()
+            if "=>" in path:  # rename: keep the destination path
+                path = path.split("=>")[-1].strip().strip("{}")
+            if path and path not in files:
+                files.append(path)
+    return files
+
+
+def _reset_patched_files(patches_dir, log_path):
+    """Restore the files the local patches touch to their HEAD state.
+
+    The patch is kept in this repo and re-applied right after the checkout,
+    so the working tree must not carry it: a modified tracked file makes
+    `git checkout <tag>` fail ("local changes would be overwritten") as
+    soon as upstream touches that file. Upstream did change the patched
+    file in v3.3.1, so this is a real risk, not a theoretical one.
+    """
+    files = _patched_files(patches_dir)
+    if not files:
+        return 0, ""
+    rc, out = run_cmd(["git", "checkout", "--", *files], cwd=IMMICH_SRC, log_path=log_path)
+    if rc != 0:
+        log_write(log_path, "WARN: could not reset patched files: %s\n"
+                  % (out or "").strip())
+        return 1, out
+    log_write(log_path, "reset patched files before checkout: %s\n" % ", ".join(files))
+    return 0, ""
+
+
+def _snapshot(paths, backup_dir):
+    """Copy the current content of the given repo-relative files."""
+    saved = {}
+    for rel in paths:
+        src = IMMICH_SRC / rel
+        if not src.is_file():
+            continue
+        dst = Path(backup_dir) / rel.replace("/", "__")
+        shutil.copy2(src, dst)
+        saved[rel] = dst
+    return saved
+
+
+def _restore_snapshot(saved):
+    """Put the snapshotted file contents back (checkout failed, tree intact)."""
+    for rel, dst in saved.items():
+        try:
+            shutil.copy2(dst, IMMICH_SRC / rel)
+        except Exception:
+            pass
+
+
 def _push(run, steps):
     run.steps = json.dumps(steps)
     db.session.commit()
@@ -206,6 +312,8 @@ def run_immich_update(run_id, tag):
         try:
             ts = datetime.now().strftime("%Y-%m-%d_%H%M")
             (BACKUP_ROOT / "immich").mkdir(parents=True, exist_ok=True)
+            # transient work belongs in /tmp, not on the data/backup disks
+            snapshot_dir = tempfile.mkdtemp(prefix="immich-update-")
 
             rc, _ = step("backup_db", lambda: run_cmd(
                 ["pg_dump", "--dbname=postgresql://storage@localhost:5432/immich", "-Fc",
@@ -224,9 +332,30 @@ def run_immich_update(run_id, tag):
                 ["git", "fetch", "origin", "--tags"], cwd=IMMICH_SRC, log_path=log_path))
             if rc != 0:
                 raise RuntimeError("git fetch failed")
+
+            # Tracked files that were edited locally make `git checkout` fail
+            # ("local changes would be overwritten"); log them up front so
+            # the failed checkout is diagnosable.
+            rc, out = run_cmd(["git", "status", "--porcelain"], cwd=IMMICH_SRC)
+            dirty = [line for line in (out or "").splitlines()
+                     if line.strip() and not line.startswith("??")]
+            if dirty:
+                log_write(log_path, "locally modified tracked files:\n%s\n"
+                          % "\n".join(dirty))
+
+            # The local patch must not be carried by the working tree across
+            # the checkout: keep a copy, reset the file, and let
+            # apply_local_patches put the patch back from this repo.
+            patched = _patched_files(IMMICH_PATCHES_DIR)
+            snapshot = _snapshot(patched, snapshot_dir)
+
+            rc, _ = step("reset_patched_files", lambda: _reset_patched_files(
+                IMMICH_PATCHES_DIR, log_path))
+
             rc, _ = step("git_checkout", lambda: run_cmd(
                 ["git", "checkout", tag], cwd=IMMICH_SRC, log_path=log_path))
             if rc != 0:
+                _restore_snapshot(snapshot)
                 raise RuntimeError("git checkout failed")
 
             # Local patches are wiped by the checkout above. Non-fatal: a
@@ -235,6 +364,8 @@ def run_immich_update(run_id, tag):
                 IMMICH_PATCHES_DIR, log_path))
             if rc != 0:
                 log_write(log_path, "WARN: local patches skipped; continuing\n")
+
+            step("pnpm_version", lambda: _check_pnpm_version(node_env, log_path))
 
             rc, _ = step("pnpm_install", lambda: run_cmd(
                 ["pnpm", "install", "--frozen-lockfile"], cwd=IMMICH_SRC,
@@ -277,6 +408,7 @@ def run_immich_update(run_id, tag):
             run.status = "failed"
             log_write(log_path, "\nFAILED: %s\n" % e)
         finally:
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
             run.finished_at = datetime.utcnow()
             run.steps = json.dumps(steps)
             db.session.commit()
