@@ -40,6 +40,7 @@ tar czf "$DEST/immich/immich_config_$STAMP.tar.gz" \
     .config/systemd/user/immich-nightfix.service \
     .config/systemd/user/immich-nightfix.timer \
     dev/stoage_system_tools/tools/immich/night_fix_thumbnails.cjs \
+    dev/stoage_system_tools/tools/immich/night_fix_wrapper.sh \
     2>"$DEST/logs/immich_tar_$STAMP.err" || log "WARN: tar immich вернул не 0"
 
 # 4. Nextcloud: дамп БД

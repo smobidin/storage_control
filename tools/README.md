@@ -83,8 +83,10 @@ BMP/PSD через ImageMagick, видео через ffmpeg). Запускае�
 
 Скрипт лежит **в этом репозитории**, а не в `~/immich/src`: Preserve в
 storage-control делает `git stash push -u`, который уносит untracked-файлы
-immich, — 2026-10-14 скрипт так и пропал. Юнит запускает его по пути
-`%h/dev/stoage_system_tools/tools/immich/night_fix_thumbnails.cjs`.
+immich, — 2026-10-14 скрипт так и пропал. Юнит запускает **обёртку**
+`%h/dev/stoage_system_tools/tools/immich/night_fix_wrapper.sh`, а она — сам
+скрипт `night_fix_thumbnails.cjs` (см. ниже: напрямую скрипт запускать нельзя,
+он падает на teardown'е).
 
 Зависимости (`sharp`, `pg`, `thumbhash`, `exiftool-vendored.pl`) берутся из
 `node_modules` immich-server через `createRequire`: `NODE_PATH` не действует на
@@ -99,37 +101,119 @@ journalctl --user -u immich-nightfix.service -n 20
 Код возврата: 0 — чинить было нечего или всё починено; 1 — что-то осталось
 без thumbhash (в journal попадает список `FAIL <asset id>`).
 
+Скрипт запускается не напрямую, а через `immich/night_fix_wrapper.sh`: после
+прохода по очереди он падает на teardown'е нативного модуля sharp/libvips
+(«known issue с очисткой native-модуля»). Сигнал зависит от версии node:
+24.15.0 — SIGABRT (код 134), 24.22.1 — SIGSEGV (код 139).
+
+Важно: краш **уничтожает собственный код возврата скрипта** — с загруженным
+sharp и `process.exit(0)`, и `process.exit(1)` дают на выходе 134/139. Поэтому
+исход обёртка восстанавливает из вывода, а не из кода процесса:
+
+| что напечатал скрипт | смысл | код обёртки |
+|---|---|---|
+| `nothing to fix` | чинить было нечего | 0 |
+| `done: N fixed, 0 failed, 0 still without preview` | очередь пройдена, всё починено | 0 |
+| `done: N fixed, F failed, L still without preview` | часть ассетов осталась без превью | 1 |
+| маркера нет вовсе | упал посреди работы | код сигнала (134/139) — видно в journal как ошибка юнита |
+
+Вывод обёртка стримит в journal через `tee` (а не копит в файл), так что
+убитый прогон всё равно оставляет в журнале свой прогресс.
+
 ## tools/immich/patches — локальные патчи immich
 
-`patches/0001-storage-statfs-bsize.patch` — правка `checkDiskUsage` в
-`server/src/repositories/storage.repository.ts`: `frsize` → `bsize`. Node на
-этом хосте не возвращает `frsize` в `fs.statfs`, поэтому `available/free/total`
-уходили в `NaN` на дашборде.
+Каталога больше нет: патч `checkDiskUsage` (`frsize` → `bsize`) удалён
+2026-10-21 вместе с обновлением Node (см. ниже). Шаг `apply_local_patches` в
+`runners/update_immich.py` корректно переживает отсутствие каталога — пишет
+«no local patches» и возвращает 0.
 
-Тот же коммит лежит веткой **`local/patches`** в репозитории `~/immich/src`
-(автор `storage <storage@nas.local>`, там не настроена глобальная идентичность).
-Ветку в origin не пушить: `origin` у immich — это апстрим `immich-app/immich`.
-Копия патча в этом репозитории нужна как страховка, если immich-репо пересоздадут.
+### Почему патч был нужен и почему исчез
 
-Апдейтер возвращает патч сам: шаг `apply_local_patches` в
-`runners/update_immich.py` после `git checkout <tag>` прогоняет каждый файл из
-`tools/immich/patches/*.patch` (`--check` → обычный `apply` → `--3way`) и делает
-это **до** сборки сервера, чтобы правка попала в `dist`. Шаг нефатальный:
-если патч больше не применяется (например, апстрим починил причину), в лог
-пишется предупреждение и обновление продолжается, а дерево откатывается через
-`git reset --hard`, чтобы в `dist` не уехали маркеры конфликта.
+Апстрим починил расчёт дисковой емкости в **v3.3.0** (коммит `3af49d9b4`,
+#31983): `checkDiskUsage` переключили с `stats.bsize` на `stats.frsize`.
+Ошибка апстрима была обратной — на virtiofs `bsize` это размер I/O-трансфера
+(1 MiB), а `frsize` реальный размер блока (4 KiB), из-за чего `blocks * bsize`
+завышал объём в 256 раз.
 
-Ручной путь — на случай если апдейтером не пользуемся:
+Но `frsize` появился в Node только в **v24.16.0** (nodejs/node#62277, «fs:
+expose frsize field in statfs», коммит `40ccfdecf9`, 2026-05-21). На хосте
+стоял `~/immich/node/bin/node` **v24.15.0** — на один патч-релиз ниже, и
+`fs.statfs()` отдавал `{type, bsize, blocks, bfree, bavail, files, ffree}` без
+`frsize`. Код апстрима на таком node даёт `undefined * number` → `NaN` в
+`diskSize` / `diskAvailable` / `diskUsagePercentage`.
+
+Поэтому 2026-10-21 Node обновлён до **v24.22.1** (LTS «Krypton», ровно та
+версия, которую пиннит апстрим в `.nvmrc` для v3.3.5) и патч снят. Проверено:
+`fs.statfs().frsize` есть, `frsize == bsize == 4096`, `/api/server/storage`
+отдаёт `diskSizeRaw` 3936685645824 — байт в байт как `df`.
+
+Замечания на будущее:
+
+- Раннер Node не обновляет: `_tool_env()` в `runners/update_immich.py` только
+  подставляет `~/immich/node/bin` в `PATH`. Версия рантайма живёт своей
+  жизнью, пока её не заменят руками.
+- ABI (modules 137) не менялся между 24.15.0 и 24.22.1, поэтому нативные
+  модули (sharp 0.35.5, bcrypt, msgpackr) пересобирать не пришлось.
+- Официальный тарбол Node **не содержит** corepack-шимов `pnpm`/`pnpx`/`yarn`
+  — и в 24.22.1, и в 24.15.0 (шимы в той установке были созданы руками). После
+  любой переустановки Node их нужно пересоздать:
+
+  ```bash
+  cd ~/immich/node/bin
+  ln -sfn ../lib/node_modules/corepack/dist/pnpm.js   pnpm
+  ln -sfn ../lib/node_modules/corepack/dist/pnpx.js   pnpx
+  ln -sfn ../lib/node_modules/corepack/dist/yarn.js   yarn
+  ln -sfn ../lib/node_modules/corepack/dist/yarnpkg.js yarnpkg
+  ```
+
+  Иначе `pnpm` из раннера резолвится не из `~/immich/node/bin`, а из
+  `~/.local/bin`, и работает уже не тот corepack.
+- Старая установка сохранена в `~/immich/node.bak-24.15.0` — это и откат, и
+  источник самого патча, если Node придётся откатывать ниже 24.16.0 (тогда
+  `frsize` пропадёт и дашборд снова покажет `NaN`).
+- Коммит патча в `~/immich/src` сохранён под тегом `local/statfs-bsize-patch`
+  (`0dab4eb7e`). В истории **этого** репозитория остался только patch-файл
+  (`git show 3f5596e:tools/immich/patches/0001-storage-statfs-bsize.patch`,
+  в его заголовке упомянут исходный SHA) — самого объекта коммита здесь нет.
+
+Если Node всё-таки придётся откатывать ниже 24.16.0 (где `frsize` ещё не
+было), патч надо вернуть — иначе дашборд снова покажет `NaN`:
 
 ```bash
 cd ~/immich/src
-git cherry-pick local/patches              # быстрый путь
-# если в новом теге контекст сместился:
-git cherry-pick --abort
-git apply --3way ~/dev/stoage_system_tools/tools/immich/patches/0001-storage-statfs-bsize.patch
-# если ветка вдруг потерялась — достаём из патч-файла выше
-pnpm --filter @immich/server build         # иначе правка не попадёт в dist
+git cherry-pick local/statfs-bsize-patch        # коммит 0dab4eb7e
+pnpm --filter immich build                       # пакет сервера называется "immich"
 ```
+
+Если контекст сместился и cherry-pick ругается:
+
+```bash
+git cherry-pick --abort
+# patch-файл лежит в истории этого репозитория:
+git show 3f5596e:tools/immich/patches/0001-storage-statfs-bsize.patch > /tmp/statfs-bsize.patch
+git apply --3way /tmp/statfs-bsize.patch
+```
+
+И **обязательно** сбросить файл перед следующим обновлением immich: каталога
+`tools/immich/patches/` сейчас нет, поэтому `_patched_files()` в раннере не
+знает про изменённый `server/src/repositories/storage.repository.ts` и не
+сбросит его перед `git checkout <tag>` — checkout откажется перезаписывать
+локальные правки.
+
+```bash
+cd ~/immich/src
+git checkout -- server/src/repositories/storage.repository.ts
+```
+
+Шаг `apply_local_patches` в `runners/update_immich.py` после `git checkout
+<tag>` прогоняет каждый файл из `tools/immich/patches/*.patch` (`--check` →
+обычный `apply` → `--3way`) и делает это **до** сборки сервера, чтобы правка
+попала в `dist`. Шаг нефатальный: если патч больше не применяется, в лог
+пишется предупреждение и обновление продолжается, а дерево откатывается
+через `git reset --hard`, чтобы в `dist` не уехали маркеры конфликта. Сейчас
+каталога `tools/immich/patches/` нет, и шаг штатно отрабатывает вхолостую
+(«no local patches», rc 0) — но код в раннере остаётся на месте, чтобы
+патчи можно было вернуть без правок самого раннера.
 
 ## tools/backup_home_rsync.sh — зеркало домашней директории
 
