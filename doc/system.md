@@ -12,6 +12,32 @@
 
 ---
 
+## Обозначения (сетевые данные замаскированы)
+
+Репозиторий публичный, поэтому все конкретные адреса, домены и имена интерфейсов
+в документации заменены масками. Реальные значения хранятся **вне репозитория**:
+`~/.config/storage-control/network-map.md`.
+
+| Маска | Что означает |
+|---|---|
+| `<DOMAIN>` | базовый домен (публичная зона) |
+| `mail.<DOMAIN>`, `drive.<DOMAIN>`, `photo.<DOMAIN>`, `home.<DOMAIN>` | поддомены сервисов |
+| `<WAN_IP>` | статический публичный адрес роутера — A-запись всех поддоменов и PTR почты |
+| `<ALT_EGRESS_IP>` | второй публичный адрес (альтернативный маршрут провайдера, не для почты) |
+| `<NAS_LAN_IP>` | LAN-адрес NAS |
+| `<LAN_CIDR>`, `<LAN_PREFIX>` | локальная сеть и её первые два октета |
+| `<ROUTER_LAN_IP>` | LAN-адрес роутера (он же source NAT при hairpin) |
+| `<VPN_CIDR>`, `<VPN_CLIENT_IP>` | пул входящего WireGuard-VPN и адрес клиента в нём |
+| `<VPN_IF>` | имя VPN-интерфейса на роутере |
+| `<VPN_ZONE>` | имя зоны VPN в fw4 |
+| `<ROUTER_NAME>` | hostname роутера |
+| `<ADMIN_EMAIL>`, `<USER_EMAIL>` | адрес из DMARC-записи и адрес из примеров логов |
+
+При правках документации новые реальные значения сюда **не вписывать** — только маски,
+а расшифровку дополнять в локальном файле.
+
+---
+
 ## Immich
 
 ### Установка и исходники
@@ -138,10 +164,10 @@ Nextcloud работает через nginx + PHP-FPM (системные юни
 
 `occ config:app:get whiteboard <key>`:
 
-- `collabBackendUrl` = `https://drive.itexperts.team/whiteboard`
+- `collabBackendUrl` = `https://drive.<DOMAIN>/whiteboard`
 - `jwt_secret_key` — общий секрет с WS-сервером (должен совпадать с `JWT_SECRET_KEY` в юните)
 
-Переменные юнита: `NEXTCLOUD_URL=https://drive.itexperts.team`, `PORT=3002`,
+Переменные юнита: `NEXTCLOUD_URL=https://drive.<DOMAIN>`, `PORT=3002`,
 `JWT_SECRET_KEY=<jwt_secret_key>`, `STORAGE_STRATEGY=lru`, `MAX_UPLOAD_FILE_SIZE=20`, `TLS=false`,
 `CHROME_EXECUTABLE_PATH=/home/storage/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome`.
 Секрет хранится в БД Nextcloud (`occ config:app:get whiteboard jwt_secret_key`) и в юните — в git не попадает.
@@ -153,7 +179,7 @@ Nextcloud работает через nginx + PHP-FPM (системные юни
 ```
 
 - `/whiteboard/` в `/etc/nginx/sites-available/nextcloud` → `http://127.0.0.1:3002`.
-- Внешний блок `drive.itexperts.team` в `proxy-sites` **обязан** пробрасывать WebSocket:
+- Внешний блок `drive.<DOMAIN>` в `proxy-sites` **обязан** пробрасывать WebSocket:
   `proxy_http_version 1.1;` + `proxy_set_header Upgrade $http_upgrade;` +
   `proxy_set_header Connection $connection_upgrade;`. Без этих строк апгрейд отбрасывается
   на внешнем слое, `$http_upgrade` во внутреннем nginx пуст и handshake не даёт `101`
@@ -194,13 +220,13 @@ systemctl status whiteboard-websocket
 curl -sk --max-time 5 -o /dev/null -w '%{http_code}\n' \
   -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
-  'https://drive.itexperts.team/whiteboard/socket.io/?EIO=4&transport=websocket'
+  'https://drive.<DOMAIN>/whiteboard/socket.io/?EIO=4&transport=websocket'
 
 # CSP (нужна аутентификация — без неё Nextcloud отдаёт 401 со своим CSP `font-src 'self' data:`):
 # приложение паролей: php occ user:add-app-password <user>, потом удалить токен
-curl -sk -u '<user>:<app-password>' -D- -o /dev/null 'https://drive.itexperts.team/apps/files/' \
+curl -sk -u '<user>:<app-password>' -D- -o /dev/null 'https://drive.<DOMAIN>/apps/files/' \
   | grep -i content-security-policy
-# Ожидается `font-src 'self' data: https://esm.sh` и `connect-src … wss://drive.itexperts.team`.
+# Ожидается `font-src 'self' data: https://esm.sh` и `connect-src … wss://drive.<DOMAIN>`.
 
 # Поиск ошибок записи:
 journalctl -u whiteboard-websocket --since '-1 hour' | grep -i 'puppeteer\|chromium'
@@ -214,25 +240,61 @@ journalctl -u whiteboard-websocket --since '-1 hour' | grep -i 'puppeteer\|chrom
 
 ### Конфигурация
 
-- **Основной конфиг:** `/etc/nginx/sites-available/proxy-sites`
-- **SSL сертификаты:** `/etc/letsencrypt/live/photo.itexperts.team/`
-  - Покрывает: `photo.itexperts.team` + `drive.itexperts.team` (SAN)
+- **Основной конфиг:** `/etc/nginx/sites-available/proxy-sites` (внешний доступ, порты 8080/8081)
+- **Локальный конфиг:** `/etc/nginx/sites-available/proxy-sites-local` (split DNS, порты 80/443)
+- **SSL сертификаты:** `/etc/letsencrypt/live/photo.<DOMAIN>/`
+  - Покрывает: `photo.<DOMAIN>` + `drive.<DOMAIN>` (SAN)
 - **WebSocket support:** `/etc/nginx/conf.d/websocket.conf` (`map $http_upgrade $connection_upgrade`)
+- **Ограничение доступа к почте:** `/etc/nginx/conf.d/mail-lan-access.conf` (`geo $mail_lan_client`)
+- **Формат лога:** в `/etc/nginx/nginx.conf` определён `log_format main_ext` — к стандартному
+  combined добавлены `host`, `port`, `scheme`, `sni`. Без них по `access.log` нельзя понять,
+  пришёл запрос по домену или по IP; `sni` показывает, какое имя прислал клиент при TLS-хендшейке.
 - **Внутренний сайт Nextcloud:** `/etc/nginx/sites-available/nextcloud` (TLS :8443)
 
 ### Server blocks
 
 | Домен | Порт | Upstream | Назначение |
 |-------|------|----------|------------|
-| photo.itexperts.team | 8080 ssl | 127.0.0.1:2283 | Immich |
-| drive.itexperts.team | 8080 ssl | 127.0.0.1:8443 (HTTPS) | Nextcloud |
-| Все | 8081 | → 301 https | HTTP redirect + ACME |
+| photo.<DOMAIN> | 8080 ssl | 127.0.0.1:2283 | Immich |
+| drive.<DOMAIN> | 8080 ssl | 127.0.0.1:8443 (HTTPS) | Nextcloud |
+| mail.<DOMAIN> | 8080 ssl | 127.0.0.1:8082 | Stalwart web UI, **только <LAN_CIDR>** |
+| photo/drive/itexperts/www | 8081 | → 301 https | HTTP redirect + ACME |
+| mail.<DOMAIN> | 8081 | → 301 https | HTTP redirect, **только <LAN_CIDR>** (ACME — всем) |
+| те же имена | 80 / 443 ssl | те же апстримы | локальный доступ (split DNS) |
 
-Внутри `drive.itexperts.team` (site `nextcloud`, :8443): `/whiteboard/` → `http://127.0.0.1:3002`
+### Доступ к mail.<DOMAIN> только из локальной сети
+
+Веб-интерфейс Stalwart (`mail.<DOMAIN>`, HTTP и HTTPS) открыт **только из
+`<LAN_CIDR>`, VPN-пула `<VPN_CIDR>`** и с loopback; из интернета отдаётся `403`.
+VPN-пул добавлен, потому что клиент входящего VPN получает `<VPN_CLIENT_IP>` и при заходе
+по FQDN приходит именно с этого адреса. Правило продублировано
+на всех четырёх точках входа (`:8080 ssl`, `:443 ssl`, `:8081`, `:80`), потому что
+внешний трафик приходит через проброс роутера (`443→8080`, `80→8081`), а локальный —
+напрямую на 80/443.
+
+Две тонкости, из-за которых конфиг выглядит нестандартно:
+
+- В блоках HTTP (`:8081`, `:80`) стоит `if ($mail_lan_client = 0) { return 403; }`, а не
+  `allow`/`deny`: `return 301` выполняется в rewrite-фазе, **до** access-фазы, поэтому
+  `deny all` в том же `location` был бы проигнорирован. В блоках с `proxy_pass`
+  (`:8080 ssl`, `:443 ssl`) access-фаза отрабатывает до content, там обычные
+  `allow <LAN_CIDR>; deny all;` — они и стоят.
+- `location /.well-known/acme-challenge/` **намеренно не фильтруется**: Let's Encrypt
+  валидирует домен с публичных адресов при продлении сертификата `<DOMAIN>`
+  (SAN `mail.<DOMAIN>`, `home.<DOMAIN>`, истекает 2027-01-14). Если закрыть
+  этот путь, автопродление сломается.
+
+Клиенты из LAN заходят через hairpin роутера и видны как `<ROUTER_LAN_IP>` (либо напрямую
+своим `<LAN_PREFIX>.x.x` при split DNS) — оба варианта попадают в разрешённую подсеть.
+Проверка после правок: `sudo certbot renew --dry-run --cert-name <DOMAIN>
+--no-random-sleep-on-renew` (обязательно проходит) и `curl -sk --resolve
+mail.<DOMAIN>:443:<WAN_IP> https://mail.<DOMAIN>/admin/` → `200`.
+
+Внутри `drive.<DOMAIN>` (site `nextcloud`, :8443): `/whiteboard/` → `http://127.0.0.1:3002`
 (WebSocket-сервер Whiteboard, см. раздел Whiteboard).
 
 **Заголовки Upgrade в двух слоях:** `proxy_set_header Upgrade`/`Connection` + `proxy_http_version 1.1`
-нужны и во внешнем блоке `drive.itexperts.team` (`proxy-sites`), и во внутреннем `/whiteboard/`
+нужны и во внешнем блоке `drive.<DOMAIN>` (`proxy-sites`), и во внутреннем `/whiteboard/`
 (`nextcloud`). Иначе апгрейд теряется и WebSocket не поднимается.
 
 **ACME webroot:** `/var/www/letsencrypt` (для certbot)
@@ -510,7 +572,7 @@ sudo journalctl -u whiteboard-websocket.service -f
 curl -sk --http1.1 --max-time 5 -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
   -o /dev/null -w '%{http_code}\n' \
-  'https://drive.itexperts.team/whiteboard/socket.io/?EIO=4&transport=websocket'
+  'https://drive.<DOMAIN>/whiteboard/socket.io/?EIO=4&transport=websocket'
 ```
 
 ### Stalwart
@@ -540,7 +602,7 @@ grep "delivery.delivered" /var/log/stalwart/stalwart.$(date +%F) | sed 's/\x1b\[
 
 ```
 2026-10-19T18:38:44Z INFO Message delivered (delivery.delivered) queueId = 335869638392939520,
-  from = "stas@itexperts.team", to = ["sobidin@gmail.com"], size = 2478,
+  from = "<ADMIN_EMAIL>", to = ["<USER_EMAIL>"], size = 2478,
   hostname = "gmail-smtp-in.l.google.com", code = 250, details = "OK"
 ```
 
@@ -709,24 +771,89 @@ ps aux | grep coolwsd
 | Ключ | Значение |
 |------|----------|
 | `wopi_backend_mode` | `local` |
-| `wopi_url` | `https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=` |
-| `public_wopi_url` | `https://drive.itexperts.team` |
+| `wopi_url` | `https://drive.<DOMAIN>/apps/richdocumentscode/proxy.php?req=` |
+| `public_wopi_url` | `https://drive.<DOMAIN>` |
 | `wopi_allowlist` | `127.0.0.1/32` |
 | `disable_certificate_verification` | (пусто = проверка включена) |
+
+### Доступ к доменам из входящего VPN (роутер)
+
+**Симптом:** с телефона под VPN (`<VPN_CLIENT_IP>`) на `drive/mail/photo.<DOMAIN>` — ошибка
+сертификата, при этом в `/var/log/nginx/access.log` **ни одной** строки с `<VPN_CLIENT_IP>`,
+а в `error.log` нет ни одного TLS-сбоя. По IP (`<NAS_LAN_IP>`) при этом всё открывается.
+
+**Причина:** все три имени резолвятся в `<WAN_IP>` — это WAN-адрес **роутера**
+(`ip route get <WAN_IP>` → `local ... table local`). Проброс портов на роутере
+(`443→<NAS_LAN_IP>:8080`, `80→8081`) в fw4 разворачивается только для тех интерфейсов,
+для которых есть переход в цепочке `dstnat`. Было:
+
+```
+chain dstnat {
+    iifname "br-lan" jump dstnat_lan     # LAN + отражение (ip saddr <LAN_CIDR>)
+    iifname "eth1"   jump dstnat_wan     # интернет
+}
+```
+
+Ветки для `<VPN_IF>` не было, поэтому пакет из VPN не попадал в DNAT и доставался самому
+роутеру — на `:443` отвечает LuCI с самоподписанным `CN=OpenWrt`, отсюда «ошибка
+сертификата». Прямой маршрут `<VPN_CIDR> → <NAS_LAN_IP>` при этом работает
+(`firewall.@forwarding[4].src='<VPN_ZONE>' → dest='lan'`), поэтому заход по IP NAS
+проходил.
+
+**Решение** — добавить DNAT для VPN-зоны `<VPN_ZONE>` с обязательной привязкой к адресу
+назначения (`src_dip`). Без `src_dip` завернулся бы **весь** HTTPS из VPN на NAS:
+
+```sh
+uci set firewall.https_vpn=redirect
+uci set firewall.https_vpn.name='https-vpn'
+uci set firewall.https_vpn.target='DNAT'
+uci set firewall.https_vpn.src='<VPN_ZONE>'
+uci set firewall.https_vpn.src_dip='<WAN_IP>'
+uci set firewall.https_vpn.src_dport='443'
+uci set firewall.https_vpn.proto='tcp'
+uci set firewall.https_vpn.dest='lan'
+uci set firewall.https_vpn.dest_ip='<NAS_LAN_IP>'
+uci set firewall.https_vpn.dest_port='8080'
+
+uci set firewall.http_vpn=redirect
+uci set firewall.http_vpn.name='http-vpn'
+uci set firewall.http_vpn.target='DNAT'
+uci set firewall.http_vpn.src='<VPN_ZONE>'
+uci set firewall.http_vpn.src_dip='<WAN_IP>'
+uci set firewall.http_vpn.src_dport='80'
+uci set firewall.http_vpn.proto='tcp'
+uci set firewall.http_vpn.dest='lan'
+uci set firewall.http_vpn.dest_ip='<NAS_LAN_IP>'
+uci set firewall.http_vpn.dest_port='8081'
+
+uci commit firewall && /etc/init.d/firewall reload
+```
+
+Проверка (должны появиться `iifname "<VPN_IF>" jump dstnat_<VPN_ZONE>` и оба правила
+с `ip daddr <WAN_IP>`):
+
+```sh
+nft list ruleset | sed -n '/chain dstnat {/,/^}/p' | grep <VPN_IF>
+nft list ruleset | sed -n '/chain dstnat_<VPN_ZONE>/,/^}/p'
+```
+
+Признак успеха на NAS — строки в `access.log` с `host="<домен>"` и `sni="<домен>"`
+от `<VPN_CLIENT_IP>` (в логе для этого добавлены `host`, `port`, `scheme`, `sni`).
+Настроено и проверено 2026-10-22.
 
 ### Проблема с NAT loopback и решение
 
 **Симптом:** Фоновое задание `OCA\Richdocuments\Backgroundjobs\ObtainCapabilities` (cron 04:05) падает с ошибкой:
 ```
 Failed to fetch discovery: cURL error 28: Operation timed out after 5001 milliseconds
-for https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=/hosting/discovery
+for https://drive.<DOMAIN>/apps/richdocumentscode/proxy.php?req=/hosting/discovery
 ```
 
-**Причина:** Cron-процесс (www-data) пытается подключиться к внешнему домену `drive.itexperts.team`, который резолвится в внешний IP (149.62.52.187). Запрос уходит через роутер и возвращается обратно (NAT loopback), но роутер/файрвол блокирует или задерживает его.
+**Причина:** Cron-процесс (www-data) пытается подключиться к внешнему домену `drive.<DOMAIN>`, который резолвится в внешний IP (<WAN_IP>). Запрос уходит через роутер и возвращается обратно (NAT loopback), но роутер/файрвол блокирует или задерживает его.
 
 **Решение:** Добавить локальную запись в `/etc/hosts`:
 ```bash
-echo "127.0.0.1 drive.itexperts.team" | sudo tee -a /etc/hosts
+echo "127.0.0.1 drive.<DOMAIN>" | sudo tee -a /etc/hosts
 ```
 
 После этого запрос разрешается локально и идёт через локальный nginx:
@@ -734,7 +861,7 @@ echo "127.0.0.1 drive.itexperts.team" | sudo tee -a /etc/hosts
 
 **Проверка:**
 ```bash
-curl -k https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=/hosting/discovery
+curl -k https://drive.<DOMAIN>/apps/richdocumentscode/proxy.php?req=/hosting/discovery
 # Должен вернуть WOPI discovery XML
 ```
 
@@ -765,7 +892,7 @@ sudo systemctl restart collabora-online.service
 
 # 5. Проверить
 sudo systemctl status collabora-online.service
-curl -k https://drive.itexperts.team/apps/richdocumentscode/proxy.php?req=/hosting/discovery
+curl -k https://drive.<DOMAIN>/apps/richdocumentscode/proxy.php?req=/hosting/discovery
 ```
 
 **Версия совместимости:**

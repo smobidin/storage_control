@@ -82,12 +82,17 @@ fi
 
 # 6. nginx + SSL конфиги
 log "Копирую nginx конфиги..."
+# Имена сертификатов не хардкодим: берём все каталоги, которые certbot держит в
+# /etc/letsencrypt/live. Так бэкап не зависит от домена (и не светит его в коде),
+# а новый сертификат подхватывается без правки скрипта.
+mapfile -t CERT_DIRS < <(find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d \
+    -printf 'letsencrypt/live/%f\n' 2>/dev/null | sort)
 tar czf "$DEST/nginx_config_$STAMP.tar.gz" \
     -C /etc \
     nginx/sites-available/proxy-sites \
     nginx/sites-available/nextcloud \
     nginx/conf.d/websocket.conf \
-    letsencrypt/live/photo.itexperts.team/ \
+    ${CERT_DIRS[@]+"${CERT_DIRS[@]}"} \
     2>"$DEST/logs/nginx_tar_$STAMP.err" || log "WARN: tar nginx вернул не 0"
 
 # 7. PostgreSQL конфиг

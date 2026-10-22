@@ -26,9 +26,9 @@
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  nginx (8080/8081, user/system) reverse proxy                    │
-│    ├─ photo.itexperts.team   → immich (2283)                      │
-│    ├─ drive.itexperts.team   → nextcloud (8443)                   │
-│    └─ control.itexperts.team → Flask app (127.0.0.1:8765)        │   <-- новый блок
+│    ├─ photo.<DOMAIN>   → immich (2283)                           │
+│    ├─ drive.<DOMAIN>   → nextcloud (8443)                        │
+│    └─ control.<DOMAIN> → Flask app (127.0.0.1:8765)              │   <-- новый блок
 └──────────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -286,7 +286,7 @@ UI: wybór тега (dropdown с текущим, latest, список), чекб
 - Flask-Login, один локальный admin; пароль задаётся при установке (`install.sh` interactive или `STORAGE_ADMIN_PASSWORD` env), хэш argon2.
 - Сессии cookie: HttpOnly, Secure (за nginx TLS), SameSite=Lax, срок жизни 8h.
 - CSRF (Flask-WTF) для всех POST.
-- Привязка к 127.0.0.1:8765; внешний доступ только через nginx TLS (новый server block control.itexperts.team или отдельный порт). Для setup добавим nginx site и cert SAN? Текущий cert покрывает photo/drive. Нужно расширить SAN до control.itexperts.team или использовать отдельный cert. План: certbot --expand -d photo... -d drive... -d control... (требует DNS A-record).
+- Привязка к 127.0.0.1:8765; внешний доступ только через nginx TLS (новый server block control.<DOMAIN> или отдельный порт). Для setup добавим nginx site и cert SAN? Текущий cert покрывает photo/drive. Нужно расширить SAN до control.<DOMAIN> или использовать отдельный cert. План: certbot --expand -d photo... -d drive... -d control... (требует DNS A-record).
 - Audit_log всех mutating действий (кто, когда, что, IP).
 - Секреты не в git; `.secrets.env` chmod 600.
 - subprocess: без shell=True где возможно; массив аргументов; валидация имён unit-ов по regex `^[a-zA-Z0-9_.@-]+\.?(service|timer|socket)$`.
@@ -371,9 +371,9 @@ WantedBy=default.target
 ```nginx
 server {
     listen 8080 ssl;
-    server_name control.itexperts.team;
-    ssl_certificate     /etc/letsencrypt/live/photo.itexperts.team/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/photo.itexperts.team/privkey.pem;
+    server_name control.<DOMAIN>;
+    ssl_certificate     /etc/letsencrypt/live/photo.<DOMAIN>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/photo.<DOMAIN>/privkey.pem;
     location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_http_version 1.1;
@@ -384,7 +384,7 @@ server {
     }
 }
 ```
-Плюс certbot --expand для SAN control.itexperts.team.
+Плюс certbot --expand для SAN control.<DOMAIN>.
 
 ---
 
@@ -403,7 +403,7 @@ server {
 
 1. Точная команда миграций Immich (npm scripts / автозапуск при старте сервера) — проверить `package.json` scripts.
 2. Nextcloud build deps: composer/npm или `make` — проверить дерево `~/nextcloud`.
-3. Добавлять ли домен `control.itexperts.team` в DNS и cert SAN — владелец.
+3. Добавлять ли домен `control.<DOMAIN>` в DNS и cert SAN — владелец.
 4. Нужен ли email/webhook при завершении длинных операций — v1 manual polling достаточно?
 5. Хранить ли историю метрик (CPU/RAM) в v1 — если да, добавить sampler + retention.
 6. Restore мастер в v1 или v1.1.
