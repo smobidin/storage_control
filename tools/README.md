@@ -98,6 +98,13 @@ systemctl --user start immich-nightfix.service     # разовый прогон
 journalctl --user -u immich-nightfix.service -n 20
 ```
 
+**Отдельного файла-лога нет.** Юнит не переопределяет `StandardOutput=`/`StandardError=`,
+поэтому весь вывод уходит в журнал systemd — пользовательский journald
+(`journalctl --user -u immich-nightfix.service`). Журнал персистентный
+(`/var/log/journal`, `Storage=persistent` по умолчанию), так что записи переживают
+ребут. Временный файл, который держит обёртка, — не лог: это буфер для проверки
+маркера, он удаляется на выходе.
+
 Код возврата: 0 — чинить было нечего или всё починено; 1 — что-то осталось
 без thumbhash (в journal попадает список `FAIL <asset id>`).
 

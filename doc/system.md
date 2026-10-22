@@ -37,11 +37,15 @@
 | `immich-server.service` | Основной API + web | 2283 | `systemctl --user start immich-server` |
 | `immich-ml.service` | ML inference (распознавание лиц, объекты) | 3003 | `systemctl --user start immich-ml` |
 | `immich-nightfix.service` | Ночной фикс миниатюр | — | `systemctl --user start immich-nightfix` |
-| `immich-nightfix.timer` | Таймер: ежедневно 03:00 | — | `systemctl --user enable immich-nightfix.timer` |
+| `immich-nightfix.timer` | Таймер: ежедневно 03:30 ±10min | — | `systemctl --user enable immich-nightfix.timer` |
 
 **Юниты лежат:** `~/.config/systemd/user/`
 
 **Логи:** `journalctl --user -u immich-server -f`
+
+**Логи ночного фикса:** `journalctl --user -u immich-nightfix.service` — отдельного
+файла-лога нет, вывод идёт в журнал systemd (юнит без `StandardOutput=`,
+журнал персистентный: `/var/log/journal`).
 
 **Конфиг:** `~/immich/.env` (DB_URL, порты, пути)
 
@@ -255,7 +259,7 @@ journalctl -u whiteboard-websocket --since '-1 hour' | grep -i 'puppeteer\|chrom
 | Задача | Расписание | Описание |
 |--------|-----------|----------|
 | `backup-immich-nc.timer` | Ежедневно 04:00 ±10min | Бэкап БД + конфигов Immich/Nextcloud/Stalwart |
-| `immich-nightfix.timer` | Ежедневно 03:00 | Фикс миниатюр Immich |
+| `immich-nightfix.timer` | Ежедневно 03:30 ±10min | Фикс миниатюр Immich |
 
 **Статус таймеров:**
 ```bash
@@ -347,6 +351,311 @@ tar xzf nextcloud_config_YYYY-MM-DD_HHMM.tar.gz -C /home/storage/nextcloud/
 
 ---
 
+## Журналы работы системы
+
+Полный перечень того, где лежат логи всех сервисов. Пути проверены на хосте.
+
+### Два уровня журнала — и права на них
+
+Хост использует **journald** (журнал systemd) как основной источник логов.
+Юниты делятся на два уровня, и это важно: пользователь `storage` состоит только
+в группах `storage` и `www-data` — **ни `adm`, ни `systemd-journal`**, поэтому
+системный журнал ему недоступен без `sudo`.
+
+| Уровень | Команда | Что видно | sudo нужен? |
+|---------|---------|-----------|-------------|
+| Пользовательский | `journalctl --user -u <юнит>` | Юниты пользователя `storage`: immich, stalwart, storage-control, бэкапы, ночной фикс | **нет** |
+| Системный | `sudo journalctl -u <юнит>` | nginx, php8.5-fpm, postgresql, redis, whiteboard-websocket, cron, certbot | **да** |
+
+Журнал **персистентный**: `/var/log/journal` существует, `Storage=persistent`
+(значение по умолчанию, в `journald.conf` строка закомментирована), поэтому
+записи переживают ребут. Ограничений по объёму и сроку нет (`SystemMaxUse=`
+пусто, `MaxRetentionSec=0`), объём пользовательского журнала на момент
+проверки — 132 МБ.
+
+Параллельно работает rsyslog и дублирует часть записей в
+`/var/log/syslog` (139 МБ) — там, в частности, строки `CRON[...]`.
+
+> Проверка «а что вообще пишется в журнал прямо сейчас»:
+> `journalctl --user -f` (свои) и `sudo journalctl -f` (системные).
+
+### Шпаргалка
+
+| Что смотрим | Команда |
+|-------------|---------|
+| Immich API/worker | `journalctl --user -u immich-server -f` |
+| Immich ML | `journalctl --user -u immich-ml -f` |
+| Ночной фикс превью | `journalctl --user -u immich-nightfix.service` |
+| Nextcloud (приложение) | `tail -f /mnt/data/nextcloud/nextcloud.log` |
+| nginx | `sudo tail -f /var/log/nginx/error.log` |
+| PostgreSQL | `sudo tail -f /var/log/postgresql/postgresql-18-main.log` |
+| Redis | `sudo journalctl -u redis-server -f` |
+| Whiteboard websocket | `sudo journalctl -u whiteboard-websocket -f` |
+| Nextcloud Office (Collabora) | `sudo journalctl -u collabora-online -f` |
+| Stalwart (сервис) | `journalctl --user -u stalwart -f` |
+| Stalwart (SMTP, доставка) | `grep "delivery.delivered" /var/log/stalwart/stalwart.$(date +%F) \| sed 's/\x1b\[[0-9;]*m//g'` |
+| Storage-control (веб-консоль) | `journalctl --user -u storage-control -f` |
+| Storage-control (лог прогона) | `ls ~/.local/share/storage-control/runs/` |
+| Бэкап БД и конфигов | `tail -f /mnt/backup/backups/logs/backup.log` |
+| Зеркало дома | `journalctl --user -u backup-home-rsync.service` |
+| Cron | `sudo grep CRON /var/log/syslog \| tail` |
+
+### Immich
+
+Всё в **пользовательском журнале**, отдельных файлов-логов нет.
+
+| Юнит | Что в нём | Как смотреть |
+|------|-----------|--------------|
+| `immich-server.service` | Основной лог: NestJS, ошибки job handler'ов, миграции, `AssetDetectFaces` и прочие микросервисные задачи | `journalctl --user -u immich-server.service` |
+| `immich-ml.service` | ML-инференс (распознавание лиц/объектов) | `journalctl --user -u immich-ml.service` |
+| `immich-nightfix.service` | Ночной фикс превью (см. ниже) | `journalctl --user -u immich-nightfix.service` |
+
+Живой пример ошибки, которую ищем при разборе превью:
+
+```
+окт 21 22:55:37 nas start.sh[19618]: [Nest] 19618 - ERROR [Microservices:{...}]
+  Unable to run job handler (AssetDetectFaces): Error: Machine learning repository not been setup
+```
+
+**Ночной фикс превью.** Отдельного файла-лога нет: юнит не переопределяет
+`StandardOutput=`, поэтому весь вывод уходит в журнал systemd. Обёртка
+(`tools/immich/night_fix_wrapper.sh`) стримит вывод через `tee`, так что
+прогресс виден в журнале в реальном времени и переживает убийство прогона.
+Временный файл обёртки — **не лог**: это буфер для проверки маркера, удаляется
+на выходе.
+
+```bash
+journalctl --user -u immich-nightfix.service            # последние записи
+journalctl --user -u immich-nightfix.service --since "-7d"
+```
+
+### Nextcloud
+
+У Nextcloud **два независимых источника**: собственный лог приложения и
+системные логи веб-стека.
+
+**Собственный лог приложения** (JSON, level 0-3, ротации нет — файл растёт):
+
+```
+/mnt/data/nextcloud/nextcloud.log
+```
+
+```bash
+tail -f /mnt/data/nextcloud/nextcloud.log
+grep -i "login failed" /mnt/data/nextcloud/nextcloud.log | tail
+```
+
+Пример записи:
+
+```json
+{"reqId":"l1YFNvrtfuJgKhxPZ8CI","level":2,"time":"2026-10-21T10:12:18+00:00",
+ "user":"stas","app":"core","method":"POST","url":"/ocs/v2.php/apps/appstore/api/v1/apps/update",
+ "message":"Login failed: 'stas' (Remote IP: '127.0.0.1')","version":"35.0.1.1"}
+```
+
+**Системные логи веб-стека** (нужен `sudo`):
+
+| Компонент | Файл/источник | Ротация |
+|-----------|---------------|---------|
+| nginx (access) | `/var/log/nginx/access.log` | `access.log.1`, `access.log.N.gz` |
+| nginx (error) | `/var/log/nginx/error.log` | по logrotate |
+| PHP-FPM | `/var/log/php8.5-fpm.log` | `php8.5-fpm.log.1` |
+| PostgreSQL | `/var/log/postgresql/postgresql-18-main.log` | `postgresql-18-main.log.1` |
+| Redis | только журнал, файла `/var/log/redis` нет | — |
+
+```bash
+sudo tail -f /var/log/nginx/error.log
+sudo tail -f /var/log/php8.5-fpm.log
+sudo tail -f /var/log/postgresql/postgresql-18-main.log
+sudo journalctl -u redis-server -f
+```
+
+**Фоновая задача Nextcloud** (`cron.php`, каждые 5 минут, crontab
+пользователя `storage`): вывод не перенаправлен, поэтому cron отправляет его
+по почте (`/var/mail` на практике пуст — cron.php молчит, если всё в порядке),
+а факт выполнения пишется в `/var/log/syslog` строкой `CRON[...]: (storage)
+CMD (/usr/bin/php -f /home/storage/nextcloud/cron.php)`. Ошибки самого
+background job видны в `nextcloud.log`.
+
+**occ** (`occ upgrade`, `occ maintenance:mode`) пишет вывод только в терминал —
+в постоянный лог он не попадает, поэтому вывод `occ` стоит сохранять при
+обновлениях вручную.
+
+**Nextcloud Office (Collabora Online)** — отдельный системный юнит
+`collabora-online.service` с `StandardOutput=journal`, то есть его вывод в
+**системном журнале** (нужен `sudo`). Сам AppImage дополнительно может писать
+`/tmp/coolwsd.<random>/coolwsd.log` — этот каталог в `/tmp`, поэтому лог
+исчезает при ребуте.
+
+```bash
+sudo journalctl -u collabora-online.service -f
+ls /tmp/coolwsd.*/coolwsd.log 2>/dev/null
+```
+
+### Whiteboard (websocket)
+
+Системный юнит, вывод — в **системный журнал** (нужен `sudo`):
+
+```bash
+sudo journalctl -u whiteboard-websocket.service -f
+```
+
+Здесь же идут ошибки Puppeteer/Chromium (`[Puppeteer] Launch check failed`) —
+по ним видно, что запись в whiteboard не работает.
+
+Проверка websocket (нужен `--http1.1`, иначе curl уходит в HTTP/2 и socket.io
+отвечает `400 {"code":3,"message":"Bad request"}`):
+
+```bash
+curl -sk --http1.1 --max-time 5 -H 'Upgrade: websocket' -H 'Connection: Upgrade' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
+  -o /dev/null -w '%{http_code}\n' \
+  'https://drive.itexperts.team/whiteboard/socket.io/?EIO=4&transport=websocket'
+```
+
+### Stalwart
+
+**Сервис** (старт, конфиг, ошибки listener'ов) — в пользовательском журнале:
+
+```bash
+journalctl --user -u stalwart.service -f
+```
+
+**SMTP и доставка писем в журнале НЕ логируются** — это отдельные файлы с
+ротацией по дате:
+
+```
+/var/log/stalwart/stalwart.<YYYY-MM-DD>
+```
+
+```bash
+# доставка (успех/провал) и результаты аутентификации
+grep -E "delivery\.delivered|delivery\.message-rejected|smtp\.dkim-pass|smtp\.dmarc-pass|smtp\.iprev-pass|smtp\.spf-from-pass|smtp\.error" \
+  /var/log/stalwart/stalwart.$(date +%F)
+# убрать ANSI-цвета, чтобы читалось:
+grep "delivery.delivered" /var/log/stalwart/stalwart.$(date +%F) | sed 's/\x1b\[[0-9;]*m//g'
+```
+
+Формат строки (цвета — ANSI escape, мешают grep'у по полям):
+
+```
+2026-10-19T18:38:44Z INFO Message delivered (delivery.delivered) queueId = 335869638392939520,
+  from = "stas@itexperts.team", to = ["sobidin@gmail.com"], size = 2478,
+  hostname = "gmail-smtp-in.l.google.com", code = 250, details = "OK"
+```
+
+Что на что смотреть:
+
+| Событие | Значит |
+|---------|--------|
+| `delivery.delivered` / `Message delivered` | письмо принято сервером получателя (в поле `hostname` — его имя) |
+| `delivery.message-rejected` | отказ, письмо не доставлено |
+| `smtp.dkim-pass`, `smtp.dmarc-pass`, `smtp.iprev-pass`, `smtp.spf-from-pass` | проверки подписи прошли (у каждой есть и `*-fail`) |
+| `smtp.error` | ошибка на уровне SMTP-сессии |
+| `code = 250, details = "OK"` | поле появляется в **локальной** доставке (DSN внутрь сервера, `hostname = "localhost"`), не в приёме Gmail'ом |
+
+По этим файлам проверяется SPF/DKIM/DMARC и факт приёма письма; в journald
+этого нет.
+
+### Storage-control (веб-консоль)
+
+**Собственный лог приложения** — stdout gunicorn'а в пользовательском журнале.
+Туда же уходит вывод APScheduler'а: ночного SMART-монитора и всех runner'ов
+обновления/подготовки.
+
+```bash
+journalctl --user -u storage-control.service -f
+```
+
+**Логи конкретных прогонов** — отдельные файлы в каталоге данных
+`$STORAGE_CONTROL_DATA/runs` (`~/.local/share/storage-control/runs`):
+
+| Файл | Что внутри |
+|------|-----------|
+| `update_immich_<timestamp>.log` | Пошаговый лог апдейта immich (build, migrations, restart) |
+| `update_nextcloud_<timestamp>.log` | Апдейт nextcloud |
+| `update_stalwart_<timestamp>.log` | Апдейт stalwart |
+| `prepare_immich_<n>.log` | Подготовка (preserve) перед апдейтом |
+| `prepare_nextcloud_<n>.log` | То же для nextcloud |
+| `prepare_stalwart_<n>.log` | То же для stalwart |
+
+```bash
+ls -lt ~/.local/share/storage-control/runs/ | head
+tail -50 ~/.local/share/storage-control/runs/update_immich_*.log
+```
+
+Прогоны видны и в веб-интерфейсе (страница Updates), живой лог preserve
+отдаётся по `/updates/preserve/<id>/log`.
+
+**SMART** отдельным файлом не пишется: состояние дисков и активные аварии
+хранятся в БД приложения (`app.db`, таблицы `SmartDiskState` / `SmartAlert`) и
+показываются на дашборде (`/api/health/smart/status`); вывод самого
+`smartctl` — в журнале storage-control.
+
+### Бэкапы и фоновые задачи
+
+| Задача | Куда пишет | Как смотреть |
+|--------|-----------|--------------|
+| `backup-immich-nc.service` (04:00) | **Файл**, не журнал: юнит перенаправляет stdout+stderr через `StandardOutput=append:` | `tail -f /mnt/backup/backups/logs/backup.log` |
+| stderr `pg_dump`/`tar` | `/mnt/backup/backups/logs/*_pgdump_*.err`, `*_tar_*.err` | `ls /mnt/backup/backups/logs/*.err` |
+| `backup-home-rsync.service` (05:00) | stdout — в пользовательский журнал; сам rsync — в свой файл | `journalctl --user -u backup-home-rsync.service` и `/mnt/backup/backups/home-storage/logs/rsync-<timestamp>.log` |
+| `immich-nightfix.service` (03:30) | Пользовательский журнал | `journalctl --user -u immich-nightfix.service` |
+
+Особенность `backup-immich-nc`: это **единственный** юнит, который пишет не в
+журнал, а в файл, поэтому `journalctl --user -u backup-immich-nc` покажет
+почти пусто — смотреть надо `backup.log`. Хвост файла содержит `ls -lht`
+артефактов бэкапа.
+
+Зеркало `/home/storage` целиком: `/mnt/backup/backups/home-storage/`
+(`current/`, `deleted/`, `logs/`), ротация — по `KEEP_DAYS`.
+
+Preserve-снапшоты: `/mnt/backup/backups/preserves/{immich,nextcloud,stalwart}/`.
+
+### Система и ОС
+
+| Что | Где | Команда |
+|-----|-----|---------|
+| Cron (все задачи) | `/var/log/syslog`, строки `CRON[...]` | `sudo grep CRON /var/log/syslog \| tail` |
+| Cron (журнал systemd) | системный журнал | `sudo journalctl -u cron.service` |
+| Certbot | только журнал, каталога `/var/log/letsencrypt` нет | `sudo journalctl -u certbot-renew.service` |
+| Collabora Online | системный журнал + `/tmp/coolwsd.<random>/coolwsd.log` (в /tmp, исчезает при ребуте) | `sudo journalctl -u collabora-online -f` |
+| sysstat (история нагрузки) | `/var/log/sysstat/saDD` | `sar -f /var/log/sysstat/sa21 -u` |
+| RAID (md0) | журнал + `/proc/mdstat` | `sudo journalctl -u mdmonitor-oneshot.service`, `cat /proc/mdstat` |
+| Ротация системных логов | `/etc/logrotate.d/` | `sudo cat /etc/logrotate.d/nginx` |
+
+### Ротация и хранение — сводка
+
+- **journald** — персистентный, без лимитов по объёму и сроку. Единственное
+  место, где лежат логи immich, stalwart (сервис), storage-control, whiteboard,
+  Collabora, nginx/php/postgres/redis (в виде записей юнитов), cron, certbot.
+- **Файлы** — `/var/log/nginx/*`, `/var/log/php8.5-fpm.log*`,
+  `/var/log/postgresql/*`, `/var/log/stalwart/stalwart.<дата>`,
+  `/var/log/sysstat/saDD`, `/var/log/syslog` (rsyslog).
+- **Приложения** — `/mnt/data/nextcloud/nextcloud.log` (ротации нет),
+  `~/.local/share/storage-control/runs/*.log` (ротации нет).
+- **Бэкап-диск** — `/mnt/backup/backups/logs/backup.log`,
+  `/mnt/backup/backups/logs/*.err`,
+  `/mnt/backup/backups/home-storage/logs/rsync-*.log`.
+
+Кто что чистит:
+
+| Что | Чем | Срок |
+|-----|-----|------|
+| `/var/log/nginx/*.log` | logrotate (`/etc/logrotate.d/nginx`) | daily, rotate 14, compress |
+| `/var/log/php8.5-fpm.log` | logrotate | weekly, rotate 12 |
+| `/var/log/postgresql/*.log` | logrotate (`postgresql-common`) | по конфигу пакета |
+| `/var/log/letsencrypt/*.log` | logrotate | weekly, rotate 12 (сам каталог на хосте отсутствует) |
+| `/var/log/stalwart/stalwart.<дата>` | сам stalwart | ротация по дате, старые файлы не вычищаются — см. `ls /var/log/stalwart/` |
+| `/mnt/backup/backups/logs/*` (включая `backup.log`) | скрипт бэкапа: `find "$DEST/logs" -type f -mtime +14 -delete` | 14 дней (`KEEP_DAYS`) |
+| `/mnt/backup/backups/{immich,nextcloud,stalwart}/*.dump` | тот же скрипт | 14 дней |
+| `/mnt/backup/backups/home-storage/logs/rsync-*.log` и `deleted/` | скрипт зеркала | 30 дней (`KEEP_DAYS`) |
+| `~/.local/share/storage-control/runs/*.log` | никто | растут, разбирать вручную |
+
+> Осторожно с `find "$DEST/logs" -type f -mtime +14 -delete`: `backup.log` там
+> единственный живой файл, он выживает только потому, что юнит дописывает его
+> каждый день (mtime обновляется). Если бэкап перестанет ходить — файл уедет по
+> ротации вместе с остальными.
+
 ## Полезные команды
 
 ```bash
@@ -354,9 +663,9 @@ tar xzf nextcloud_config_YYYY-MM-DD_HHMM.tar.gz -C /home/storage/nextcloud/
 systemctl --user status immich-server immich-ml
 systemctl status nginx postgresql redis-server php8.5-fpm whiteboard-websocket
 
-# Логи
+# Логи (полная карта — в разделе «Журналы работы системы»)
 journalctl --user -u immich-server -f
-journalctl -u whiteboard-websocket -f
+sudo journalctl -u whiteboard-websocket -f
 sudo tail -f /var/log/nginx/error.log
 
 # БД
