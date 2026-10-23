@@ -1,0 +1,55 @@
+[package]
+name = "storage-control"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "NAS storage console: Immich/Nextcloud/Stalwart monitoring, backups, updates"
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8", features = ["form", "query"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit", "compression-gzip"] }
+
+askama = { version = "0.16", features = ["serde_json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+argon2 = "0.5"
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+cookie = "0.18"
+percent-encoding = "2"
+
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+
+sysinfo = "0.32"
+libc = "0.2"
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+croner = "2"
+pulldown-cmark = "0.12"
+lazy_static = "1.4"
+semver = "1.0"
+regex = "1"
+subprocess = "0.2"
+ureq = { version = "2", features = ["native-tls"] }
+flate2 = "1"
+tar = "0.4"
+walkdir = "2"
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

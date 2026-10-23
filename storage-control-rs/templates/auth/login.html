@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<div class="card" style="max-width:380px;margin:40px auto;">
+  <h2>Sign in</h2>
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div style="margin-bottom:12px;">
+      <label class="muted">Username</label><br>
+      <input name="username" value="{{ username }}" style="width:100%;padding:8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label class="muted">Password</label><br>
+      <input type="password" name="password" style="width:100%;padding:8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;">
+    </div>
+    <button class="btn ok" type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

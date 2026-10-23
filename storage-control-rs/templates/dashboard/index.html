@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="card">
+  <h3>App Health</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+    <div>Immich: <span id="immich-health" class="badge unknown">checking</span></div>
+    <div>Nextcloud: <span id="nextcloud-health" class="badge unknown">checking</span></div>
+    <div>Stalwart: <span id="stalwart-health" class="badge unknown">checking</span></div>
+  </div>
+  <div class="muted" id="immich-health-meta"></div>
+  <div class="muted" id="nextcloud-health-meta"></div>
+  <div class="muted" id="stalwart-health-meta"></div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:13px;">
+    <div>Immich версия: текущая <strong id="immich-version-current">-</strong>, доступная <strong id="immich-version-latest">-</strong> <span id="immich-version-badge" class="badge unknown">checking</span></div>
+    <div>Nextcloud версия: текущая <strong id="nextcloud-version-current">-</strong>, доступная <strong id="nextcloud-version-latest">-</strong> <span id="nextcloud-version-badge" class="badge unknown">checking</span></div>
+    <div>Stalwart версия: текущая <strong id="stalwart-version-current">-</strong>, доступная <strong id="stalwart-version-latest">-</strong> <span id="stalwart-version-badge" class="badge unknown">checking</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Host</h3>
+  <div id="host" class="muted">loading...</div>
+</div>
+
+<div class="grid grid-3">
+  <div class="card">
+    <h3>CPU</h3>
+    <div class="stat" id="cpu-pct">--%</div>
+    <div class="muted" id="cpu-meta"></div>
+    <div class="bar"><div id="cpu-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <h3>Memory</h3>
+    <div class="stat" id="mem-pct">--%</div>
+    <div class="muted" id="mem-meta"></div>
+    <div class="bar"><div id="mem-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <h3>Swap</h3>
+    <div class="stat" id="swap-pct">--%</div>
+    <div class="muted" id="swap-meta"></div>
+    <div class="bar"><div id="swap-bar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Temperatures</h3>
+  <div id="temps" class="grid grid-3"></div>
+</div>
+
+<div class="card">
+  <h3>Disks</h3>
+  <div id="disks"></div>
+</div>
+
+<div class="card">
+  <h3>SMART <button id="smart-refresh-btn" class="btn" style="font-size:12px;padding:4px 10px;margin-left:12px;vertical-align:middle;">Refresh SMART Info</button></h3>
+  <table id="smart-table">
+    <thead><tr><th>Device</th><th>Model</th><th>Health</th><th>Temp</th><th>Reallocated</th><th>Pending</th><th>Offline</th><th>ATA Errors</th><th>Baseline</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="smart-alarms-block" style="margin-top:14px;padding:12px;border:1px solid #334155;border-radius:8px;background:#0f172a;">
+    <h4 id="smart-alarms-title" style="margin:0 0 8px;color:#94a3b8;">Alarms</h4>
+    <div id="smart-alerts"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>RAID Status</h3>
+  <div id="raid"></div>
+</div>
+
+<div class="card">
+  <h3>Services</h3>
+  <table id="svc-table">
+    <thead><tr><th>Unit</th><th>Scope</th><th>Group</th><th>Status</th><th>Enabled</th><th>Since</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/dashboard.js" defer></script>{% endblock %}

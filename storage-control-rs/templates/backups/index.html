@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Backups{% endblock %}
+{% block head %}
+<style>
+  .row-actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .row-actions form { display:inline; }
+  .btn.small { font-size:12px; padding:4px 8px; }
+  .edit-box { margin-top:8px; min-width:340px; }
+  .edit-box input, .edit-box select, .edit-box textarea { padding:4px; margin:2px; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Backups</h1>
+
+<div class="card">
+  <h3>Create / manage task</h3>
+  <form method="post" action="/backups/tasks">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="grid" style="grid-template-columns:2fr 1fr 1fr 1fr;">
+      <input name="name" placeholder="Task name" required style="padding:6px;">
+      <select name="kind">
+        {% for k in kind_options %}
+        <option value="{{ k.value }}">{{ k.value }}</option>
+        {% endfor %}
+      </select>
+      <input name="cron" placeholder="cron (empty=manual)" style="padding:6px;">
+      <input name="retention_days" type="number" min="1" max="3650" value="14" style="padding:6px;">
+    </div>
+    <label style="display:inline-block;margin-top:8px;"><input type="checkbox" name="enabled" checked> enabled</label>
+    <textarea name="command" placeholder="custom command (bash -lc) — only for kind=custom" style="width:100%;margin-top:8px;" rows="2"></textarea>
+    <button class="btn ok" type="submit" style="margin-top:8px;" data-confirm="Создать задачу резервного копирования?">Create task</button>
+  </form>
+</div>
+
+{% for g in task_groups %}
+<details class="card" style="margin-top:16px;" open>
+  <summary style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+    <h3 style="margin:0;">{{ g.label }} Tasks ({{ g.count }})</h3>
+    <span class="muted">▼</span>
+  </summary>
+  <div style="margin-top:12px;">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Kind</th><th>Schedule</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for t in g.tasks %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td>{{ t.kind }}</td>
+          <td>{{ t.cron }}</td>
+          <td>{{ t.enabled }}</td>
+          <td>{{ t.last_run }}</td>
+          <td>{{ t.last_status }}</td>
+          <td>
+            <div class="row-actions">
+              <form method="post" action="/backups/tasks/{{ t.id }}/run">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button class="btn ok" type="submit" data-confirm="Запустить задачу {{ t.name }}?">Run</button>
+              </form>
+              <details style="display:inline-block;vertical-align:middle;">
+                <summary class="btn" style="list-style:none;cursor:pointer;">Edit</summary>
+                <form method="post" action="/backups/tasks/{{ t.id }}/update" class="edit-box">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input name="name" value="{{ t.name }}" required>
+                  <select name="kind">
+                    {% for k in t.kind_options %}
+                    <option value="{{ k.value }}" {% if k.selected %}selected{% endif %}>{{ k.value }}</option>
+                    {% endfor %}
+                  </select><br>
+                  <input name="cron" value="{{ t.cron }}" placeholder="cron">
+                  <input name="retention_days" type="number" min="1" max="3650" value="{{ t.retention_days }}">
+                  <label><input type="checkbox" name="enabled" {% if t.enabled %}checked{% endif %}> enabled</label><br>
+                  <textarea name="command" rows="2" style="width:100%;">{{ t.command }}</textarea>
+                  <button class="btn ok" type="submit" style="margin-top:4px;" data-confirm="Сохранить изменения задачи {{ t.name }}?">Save</button>
+                </form>
+              </details>
+              <form method="post" action="/backups/tasks/{{ t.id }}/delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <button class="btn danger" type="submit" data-confirm="Удалить задачу {{ t.name }}?">Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endfor %}
+
+<div class="card" style="margin-top:16px;">
+  <h3>Recent runs</h3>
+  {% for g in run_groups %}
+  <details style="margin-top:8px;" open>
+    <summary style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+      <h4 style="margin:0;">{{ g.label }} ({{ g.count }})</h4>
+      <span class="muted">▼</span>
+    </summary>
+    <div style="margin-top:8px;">
+      <table>
+        <thead><tr><th style="width:60px;">ID</th><th>Task</th><th style="width:90px;">Status</th><th style="width:150px;">Started</th><th>Files</th></tr></thead>
+        <tbody>
+          {% for r in g.runs %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.task }}</td>
+            <td><span class="badge {{ r.badge }}">{{ r.status }}</span></td>
+            <td class="muted">{{ r.started }}</td>
+            <td><pre style="font-size:11px;margin:0;">{{ r.files }}</pre></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3>Files</h3>
+  {% for g in file_groups %}
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+      <h4 style="margin:0;">{{ g.label }} ({{ g.count }})</h4>
+      <span class="muted">▼</span>
+    </summary>
+    <div style="margin-top:8px;">
+      <table>
+        <thead><tr><th>Name</th><th style="width:110px;">Size</th><th style="width:150px;">Modified</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for f in g.files %}
+          <tr>
+            <td>{{ f.rel }}</td>
+            <td>{{ f.size }}</td>
+            <td class="muted">{{ f.mtime }}</td>
+            <td>
+              <div class="row-actions">
+                <a class="btn small" href="/backups/files/download?rel={{ f.rel }}">Download</a>
+                {% if f.is_dump %}
+                <form method="post" action="/backups/files/verify">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="rel" value="{{ f.rel }}">
+                  <button class="btn small" type="submit" data-confirm="Проверить backup-файл {{ f.rel }}?">Verify</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/backups/files/delete">
+                  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                  <input type="hidden" name="rel" value="{{ f.rel }}">
+                  <button class="btn small danger" type="submit" data-confirm="Удалить backup-файл {{ f.rel }}?">Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% endblock %}

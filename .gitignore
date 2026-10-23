@@ -10,3 +10,8 @@ __pycache__/
 *.env
 secrets.env
 .venv
+
+# Rust rewrite
+storage-control-rs/target/
+# Raw host captures contain serial numbers and a copy of the legacy database.
+storage-control-rs/tests/fixtures/raw/

@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Scheduler{% endblock %}
+{% block head %}
+<style>
+  .unitlink { background:none; border:none; color:var(--accent); cursor:pointer;
+              font:inherit; padding:0; text-align:left; }
+  .unitlink:hover { text-decoration:underline; }
+  .modal-backdrop[hidden] { display:none; }
+  .modal-backdrop { position:fixed; inset:0; background:rgba(2,6,23,.75);
+                    display:flex; align-items:center; justify-content:center;
+                    padding:20px; z-index:50; }
+  .modal { background:var(--panel); border:1px solid #334155; border-radius:10px;
+           width:min(920px,100%); max-height:85vh; display:flex; flex-direction:column; }
+  .modal-head { display:flex; align-items:center; gap:12px; padding:12px 16px;
+                border-bottom:1px solid #334155; }
+  .modal-head strong { word-break:break-all; }
+  .modal-body { margin:0; padding:16px; overflow:auto;
+                font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                font-size:12.5px; line-height:1.5; white-space:pre-wrap;
+                word-break:break-word; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Scheduler</h1>
+
+<div class="card">
+  <h3>Create custom job</h3>
+  <form method="post" action="/scheduler/jobs">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input name="name" placeholder="job name" required style="padding:6px;margin-right:6px;">
+    <input name="cron" placeholder="cron, e.g. 0 3 * * *" style="padding:6px;margin-right:6px;">
+    <label><input type="checkbox" name="enabled" checked> enabled</label><br>
+    <textarea name="command" placeholder="bash command" rows="3" style="width:100%;margin-top:8px;"></textarea>
+    <textarea name="notes" placeholder="notes" rows="1" style="width:100%;margin-top:4px;"></textarea>
+    <button class="btn ok" type="submit" style="margin-top:8px;" data-confirm="Создать запланированное задание?">Create</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>APScheduler jobs</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Trigger</th><th>Next run</th></tr></thead>
+    <tbody>
+    {% for j in aps_jobs %}
+      <tr><td>{{ j.id }}</td><td>{{ j.trigger }}</td><td>{{ j.next }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Custom jobs</h3>
+  <table>
+    <thead><tr><th>Name</th><th>Cron</th><th>Enabled</th><th>Last run</th><th>Status</th><th>Delete</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td>{{ j.name }}</td>
+        <td>{{ j.cron }}</td>
+        <td>{{ j.enabled }}</td>
+        <td>{{ j.last_run }}</td>
+        <td>{{ j.last_status }}</td>
+        <td>
+          <form method="post" action="/scheduler/jobs/{{ j.id }}/run" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button class="btn ok" type="submit" data-confirm="Запустить задачу {{ j.name }}?">Run</button>
+          </form>
+          <form method="post" action="/scheduler/jobs/{{ j.id }}/delete" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button class="btn danger" type="submit" data-confirm="Удалить задание {{ j.name }}?">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>System/user timers</h3>
+  <table>
+    <thead><tr><th>Scope</th><th>Unit</th><th>Raw</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for t in timers %}
+      <tr>
+        <td>{{ t.scope }}</td>
+        <td>
+          <button type="button" class="unitlink" title="Показать unit-файл"
+                  data-scope="{{ t.scope }}" data-unit="{{ t.unit }}">{{ t.unit }}</button>
+        </td>
+        <td style="font-size:11px;">{{ t.raw }}</td>
+        <td>
+          {% for act in ["enable","disable","start","stop"] %}
+          <form method="post" action="/scheduler/timer/toggle" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <input type="hidden" name="unit" value="{{ t.unit }}">
+            <input type="hidden" name="scope" value="{{ t.scope }}">
+            <input type="hidden" name="action" value="{{ act }}">
+            <button class="btn" type="submit" data-confirm="Выполнить {{ act }} для {{ t.unit }}?">{{ act }}</button>
+          </form>
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div id="unitModal" class="modal-backdrop" hidden
+     data-url="/scheduler/unit/__SCOPE__/__UNIT__">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unitModalTitle">
+    <div class="modal-head">
+      <strong id="unitModalTitle">unit</strong>
+      <button class="btn" type="button" id="unitModalClose" style="margin-left:auto;">Закрыть</button>
+    </div>
+    <pre id="unitModalBody" class="modal-body">Загрузка…</pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var modal = document.getElementById('unitModal');
+  if (!modal) return;
+  var title = document.getElementById('unitModalTitle');
+  var body = document.getElementById('unitModalBody');
+  var urlTemplate = modal.getAttribute('data-url');
+
+  function hide() { modal.hidden = true; }
+
+  document.getElementById('unitModalClose').addEventListener('click', hide);
+  modal.addEventListener('click', function (e) { if (e.target === modal) hide(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !modal.hidden) hide();
+  });
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.unitlink') : null;
+    if (!btn) return;
+
+    title.textContent = btn.getAttribute('data-unit');
+    body.textContent = 'Загрузка…';
+    modal.hidden = false;
+
+    var url = urlTemplate
+      .replace('__SCOPE__', encodeURIComponent(btn.getAttribute('data-scope')))
+      .replace('__UNIT__', encodeURIComponent(btn.getAttribute('data-unit')));
+
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      })
+      .then(function (res) {
+        body.textContent = (res.ok && res.data && res.data.ok)
+          ? res.data.text
+          : 'Ошибка: ' + ((res.data && res.data.error) || ('HTTP ' + res.ok));
+      })
+      .catch(function (err) { body.textContent = 'Ошибка запроса: ' + err; });
+  });
+})();
+</script>
+{% endblock %}

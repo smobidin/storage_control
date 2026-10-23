@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Services{% endblock %}
+{% block head %}
+<style>
+  .group-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:12px; }
+  .group-head h3 { margin:0; }
+  .group-actions, .row-actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .row-actions form { display:inline; }
+  .btn.small { font-size:12px; padding:4px 8px; }
+  .unit-critical { color:var(--warn); }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Services</h1>
+
+{% for g in groups %}
+<div class="card" style="margin-bottom:16px;">
+  <div class="group-head">
+    <h3>{{ g.label }}</h3>
+    <div class="group-actions">
+      <form method="post" action="/services/group">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <input type="hidden" name="group" value="{{ g.name }}">
+        <input type="hidden" name="action" value="start">
+        <button class="btn ok" type="submit" data-confirm="Запустить группу {{ g.name }}?">Start All</button>
+      </form>
+      <form method="post" action="/services/group">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <input type="hidden" name="group" value="{{ g.name }}">
+        <input type="hidden" name="action" value="stop">
+        <button class="btn danger" type="submit" data-confirm="Остановить группу {{ g.name }}?">Stop All</button>
+      </form>
+      <form method="post" action="/services/group">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <input type="hidden" name="group" value="{{ g.name }}">
+        <input type="hidden" name="action" value="restart">
+        <button class="btn" type="submit" data-confirm="Перезапустить группу {{ g.name }}?">Restart All</button>
+      </form>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28%;">Unit</th>
+        <th style="width:9%;">Scope</th>
+        <th style="width:13%;">Status</th>
+        <th style="width:16%;">Last Run</th>
+        <th style="width:11%;">Enabled</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in g.rows %}
+      <tr>
+        <td>
+          <strong>{{ s.name }}</strong>
+          {% if s.critical %}<span class="unit-critical" title="Критичный сервис">*</span>{% endif %}
+          <div class="muted">{{ s.desc }}</div>
+        </td>
+        <td>{{ s.scope }}</td>
+        <td>
+          <span class="badge {{ s.badge }}">{{ s.status }}</span>
+          {% if s.oneshot %}<span class="muted" style="font-size:11px;margin-left:4px;">(oneshot)</span>{% endif %}
+        </td>
+        <td><div class="muted" style="font-size:12px;">{{ s.last_run }}</div></td>
+        <td>{{ s.enabled }}</td>
+        <td>
+          <div class="row-actions">
+            <a class="btn small" target="_blank" rel="noopener"
+               href="/services/logs?unit={{ s.name }}&scope={{ s.scope }}">Logs</a>
+            {% for action in s.actions %}
+            <form method="post" action="/services/manage">
+              <input type="hidden" name="csrf_token" value="{{ csrf }}">
+              <input type="hidden" name="unit" value="{{ s.name }}">
+              <input type="hidden" name="scope" value="{{ s.scope }}">
+              <input type="hidden" name="action" value="{{ action.name }}">
+              <button class="btn small {{ action.class }}"
+                      type="submit" data-confirm="Выполнить {{ action.name }} для {{ s.name }}?">{{ action.name }}</button>
+            </form>
+            {% endfor %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+{% endblock %}
